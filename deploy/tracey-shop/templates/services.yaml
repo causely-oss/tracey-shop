@@ -1,0 +1,141 @@
+{{- /*
+One Deployment (and, unless protocol is "none", one Service) per entry in
+.Values.services. Adding a service to the demo is one values block plus one Go
+package registered in cmd/shopd/main.go.
+*/ -}}
+{{- $root := . -}}
+{{- $fullname := include "tracey-shop.fullname" . -}}
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+{{- $role := default $name $svc.role }}
+{{- $resources := default $root.Values.defaultResources $svc.resources }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-{{ $name }}
+  labels:
+    {{- include "tracey-shop.labels" $root | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  replicas: {{ default 1 $svc.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+      app.kubernetes.io/part-of: {{ include "tracey-shop.name" $root }}
+  template:
+    metadata:
+      labels:
+        {{- include "tracey-shop.labels" $root | nindent 8 }}
+        app.kubernetes.io/name: {{ $name }}
+        app.kubernetes.io/component: {{ $role }}
+        {{- with $root.Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $root.Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "tracey-shop.serviceAccountName" $root }}
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Long enough for in-flight checkouts to drain, so a rollout does not
+      # register as an error in the Causely baseline.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: shopd
+          image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag | default $root.Chart.AppVersion }}"
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          env:
+            - name: ROLE
+              value: {{ $role | quote }}
+            # SERVICE_NAME, not ROLE, becomes service.name — which is how the
+            # three partner simulators share one implementation but appear as
+            # distinct services in Causely's topology.
+            - name: SERVICE_NAME
+              value: {{ $name | quote }}
+            {{- if eq (default "http" $svc.protocol) "http" }}
+            - name: HTTP_ADDR
+              value: {{ printf ":%d" (int $svc.port) | quote }}
+            {{- else if eq $svc.protocol "grpc" }}
+            - name: GRPC_ADDR
+              value: {{ printf ":%d" (int $svc.port) | quote }}
+            {{- end }}
+            {{- with $svc.partnerName }}
+            - name: PARTNER_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $svc.partnerLatency }}
+            - name: PARTNER_LATENCY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- include "tracey-shop.commonEnv" (dict "root" $root) | nindent 12 }}
+            {{- with $svc.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: admin
+              containerPort: {{ int $root.Values.adminPort }}
+            {{- if ne (default "http" $svc.protocol) "none" }}
+            - name: {{ if eq $svc.protocol "grpc" }}grpc{{ else }}http{{ end }}
+              containerPort: {{ int $svc.port }}
+            {{- end }}
+          # Probes hit the admin port, which is never trace-instrumented, so
+          # kubelet traffic cannot appear as a dependency edge in the topology.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            # Backends can take a while on a cold cluster; a generous budget
+            # here avoids restart churn that would dirty the baseline.
+            failureThreshold: 30
+          resources:
+            {{- toYaml $resources | nindent 12 }}
+{{- if ne (default "http" $svc.protocol) "none" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-{{ $name }}
+  labels:
+    {{- include "tracey-shop.labels" $root | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/part-of: {{ include "tracey-shop.name" $root }}
+  ports:
+    - name: {{ if eq $svc.protocol "grpc" }}grpc{{ else }}http{{ end }}
+      port: {{ int $svc.port }}
+      targetPort: {{ int $svc.port }}
+      protocol: TCP
+{{- end }}
+{{- end }}
+{{- end }}

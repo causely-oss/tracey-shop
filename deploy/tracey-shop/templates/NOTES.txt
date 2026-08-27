@@ -1,0 +1,64 @@
+Tracey Shop is installing into namespace {{ .Release.Namespace }}.
+
+Watch it come up:
+
+  kubectl -n {{ .Release.Namespace }} get pods -w
+
+{{ if .Values.otelCollector.enabled -}}
+Traces path:
+
+  application pods
+    -> {{ include "tracey-shop.collectorName" . }}:{{ .Values.otelCollector.ports.grpc }}   (OTLP gRPC, k8sattributes applied here)
+    -> {{ .Values.otelCollector.exporter.endpoint }}   (OTLP {{ upper .Values.otelCollector.exporter.protocol }}, Causely mediator)
+
+If services never appear in Causely, check the collector first:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "tracey-shop.collectorName" . }}
+
+To repoint at a different mediator:
+
+  helm upgrade {{ .Release.Name }} deploy/tracey-shop -n {{ .Release.Namespace }} --reuse-values \
+    --set otelCollector.exporter.endpoint=mediator.causely:4317 \
+    --set otelCollector.exporter.protocol=grpc
+{{- else -}}
+The bundled collector is disabled; application pods export directly to:
+
+  {{ .Values.otel.endpoint | default "(unset — traces are being discarded)" }}
+
+That collector MUST run the k8sattributes processor. Causely resolves a span's
+workload from k8s.pod.uid or k8s.namespace.name + k8s.pod.name and drops spans it
+cannot map, so without it the demo will not appear in the topology at all.
+{{- end }}
+
+Reach the storefront:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "tracey-shop.fullname" . }}-storefront-bff {{ (index .Values.services "storefront-bff").port }}
+{{- if .Values.storefrontWeb.enabled }}
+
+Then open the shop in a browser:
+
+  http://localhost:{{ (index .Values.services "storefront-bff").port }}
+{{- end }}
+
+Or drive the API directly:
+
+  curl localhost:{{ (index .Values.services "storefront-bff").port }}/api/products | jq
+
+{{ if .Values.loadgen.enabled -}}
+Load generator is running at {{ .Values.loadgen.rps }} rps. Change it live, with no
+restart and no helm upgrade:
+
+  ./scripts/load.sh 80
+{{- else -}}
+Load generator is disabled. Enable it with --set loadgen.enabled=true.
+{{- end }}
+
+Fault injection is off — this is a clean baseline. Stage a scenario:
+
+  ./scripts/scenario.sh list
+  ./scripts/scenario.sh start payment-errors
+  ./scripts/scenario.sh stop payment-errors
+
+Verify the trace attributes Causely depends on before blaming the platform:
+
+  ./scripts/verify-traces.sh

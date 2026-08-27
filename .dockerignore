@@ -1,0 +1,14 @@
+.git
+.gitignore
+.dockerignore
+Dockerfile
+Makefile
+README.md
+docs/
+deploy/
+scripts/
+proto/
+.tmp/
+bin/
+out/
+*.md

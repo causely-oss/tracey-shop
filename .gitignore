@@ -1,0 +1,24 @@
+# Build output
+/bin/
+/out/
+/shopd
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Local scratch
+/.tmp/
+*.local.yaml
+.env
+kubeconfig*
+
+# helm package output
+*.tgz
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store

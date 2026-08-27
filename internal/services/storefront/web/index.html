@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tracey Shop</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="/" data-nav>
+    <span class="brand-mark">TS</span>
+    <span class="brand-name">Tracey&nbsp;Shop</span>
+  </a>
+
+  <form id="search-form" class="search" autocomplete="off">
+    <input id="search" name="q" type="search" placeholder="Search the store…" aria-label="Search products">
+    <button id="search-submit" type="submit">Search</button>
+  </form>
+
+  <a id="cart-link" class="cart-link" href="/cart" data-nav aria-label="View cart">
+    Cart <span id="cart-count" class="cart-count">0</span>
+  </a>
+</header>
+
+<nav class="categories" id="categories" aria-label="Product categories"></nav>
+
+<!--
+  A single banner element, reused for every user-visible failure. Its id is
+  stable so an analytics or RUM tool can key a "checkout failed" event off it.
+-->
+<div id="error-banner" class="banner banner-error" role="alert" hidden>
+  <span id="error-message"></span>
+  <button id="error-dismiss" type="button" aria-label="Dismiss">&times;</button>
+</div>
+
+<main id="view" class="view" aria-live="polite"></main>
+
+<footer class="footer">
+  <span>Tracey Shop — a Causely demo application</span>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

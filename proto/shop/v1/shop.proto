@@ -1,0 +1,247 @@
+syntax = "proto3";
+
+package shop.v1;
+
+option go_package = "github.com/causely-oss/tracey-shop/gen/shop/v1;shopv1";
+
+// ---------------------------------------------------------------------------
+// Common
+// ---------------------------------------------------------------------------
+
+message Money {
+  // Amount in minor units (cents), to keep the demo free of float drift.
+  int64 cents = 1;
+  string currency = 2;
+}
+
+message Product {
+  string id = 1;
+  string sku = 2;
+  string name = 3;
+  string category = 4;
+  Money price = 5;
+  int32 available = 6;
+}
+
+message LineItem {
+  string product_id = 1;
+  int32 quantity = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Catalog (layer 2, gRPC) -> inventory-svc, valkey
+// ---------------------------------------------------------------------------
+
+service CatalogService {
+  rpc ListProducts(ListProductsRequest) returns (ListProductsResponse);
+  rpc GetProduct(GetProductRequest) returns (GetProductResponse);
+  rpc SearchProducts(SearchProductsRequest) returns (ListProductsResponse);
+}
+
+message ListProductsRequest {
+  string category = 1;
+  int32 limit = 2;
+}
+
+message ListProductsResponse {
+  repeated Product products = 1;
+  bool cache_hit = 2;
+}
+
+message GetProductRequest {
+  string id = 1;
+}
+
+message GetProductResponse {
+  Product product = 1;
+  bool cache_hit = 2;
+}
+
+message SearchProductsRequest {
+  string query = 1;
+  int32 limit = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Inventory (layer 3, gRPC) -> postgres
+// ---------------------------------------------------------------------------
+
+service InventoryService {
+  rpc ListStock(ListStockRequest) returns (ListStockResponse);
+  rpc CheckStock(CheckStockRequest) returns (CheckStockResponse);
+  rpc ReserveStock(ReserveStockRequest) returns (ReserveStockResponse);
+}
+
+message ListStockRequest {
+  string category = 1;
+  int32 limit = 2;
+  string query = 3;
+  string product_id = 4;
+}
+
+message ListStockResponse {
+  repeated Product products = 1;
+}
+
+message CheckStockRequest {
+  repeated LineItem items = 1;
+}
+
+message CheckStockResponse {
+  bool all_available = 1;
+  repeated string unavailable_product_ids = 2;
+}
+
+message ReserveStockRequest {
+  string order_id = 1;
+  repeated LineItem items = 2;
+}
+
+message ReserveStockResponse {
+  string reservation_id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Pricing (layer 3, gRPC) -> postgres, valkey
+// ---------------------------------------------------------------------------
+
+service PricingService {
+  rpc Quote(QuoteRequest) returns (QuoteResponse);
+}
+
+message QuoteRequest {
+  string cart_id = 1;
+  repeated LineItem items = 2;
+  string customer_tier = 3;
+}
+
+message QuoteResponse {
+  Money subtotal = 1;
+  Money discount = 2;
+  Money tax = 3;
+  Money total = 4;
+  repeated string applied_rules = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Checkout (layer 2, gRPC) -> cart-service, pricing-engine, payment-gw,
+//                            shipping-quote, kafka: orders
+// ---------------------------------------------------------------------------
+
+service CheckoutService {
+  rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+}
+
+message PlaceOrderRequest {
+  string cart_id = 1;
+  string customer_id = 2;
+  string customer_tier = 3;
+  string email = 4;
+  Address shipping_address = 5;
+  CardDetails card = 6;
+}
+
+message Address {
+  string street = 1;
+  string city = 2;
+  string region = 3;
+  string postal_code = 4;
+  string country = 5;
+}
+
+message CardDetails {
+  string last_four = 1;
+  string brand = 2;
+}
+
+message PlaceOrderResponse {
+  string order_id = 1;
+  Money total = 2;
+  Money shipping_cost = 3;
+  string transaction_id = 4;
+  string tracking_id = 5;
+}
+
+message GetOrderRequest {
+  string order_id = 1;
+}
+
+message GetOrderResponse {
+  string order_id = 1;
+  string status = 2;
+  Money total = 3;
+  repeated LineItem items = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Payment (layer 3, gRPC) -> ledger-svc, stripe-sim
+// ---------------------------------------------------------------------------
+
+service PaymentService {
+  rpc Authorize(AuthorizeRequest) returns (AuthorizeResponse);
+}
+
+message AuthorizeRequest {
+  string order_id = 1;
+  string customer_id = 2;
+  Money amount = 3;
+  CardDetails card = 4;
+}
+
+message AuthorizeResponse {
+  string transaction_id = 1;
+  string authorization_code = 2;
+  string processor = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Ledger (layer 4, gRPC) -> postgres, kafka: ledger.events
+// ---------------------------------------------------------------------------
+
+service LedgerService {
+  rpc RecordTransaction(RecordTransactionRequest) returns (RecordTransactionResponse);
+  rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse);
+}
+
+message RecordTransactionRequest {
+  string transaction_id = 1;
+  string order_id = 2;
+  string customer_id = 3;
+  Money amount = 4;
+}
+
+message RecordTransactionResponse {
+  string journal_id = 1;
+  int64 entry_count = 2;
+}
+
+message GetBalanceRequest {
+  string account = 1;
+}
+
+message GetBalanceResponse {
+  string account = 1;
+  Money balance = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Risk (layer 5, gRPC) -> valkey feature store
+// ---------------------------------------------------------------------------
+
+service RiskService {
+  rpc Score(ScoreRequest) returns (ScoreResponse);
+}
+
+message ScoreRequest {
+  string order_id = 1;
+  string customer_id = 2;
+  Money amount = 3;
+  string country = 4;
+}
+
+message ScoreResponse {
+  double score = 1;
+  string decision = 2;
+  repeated string signals = 3;
+}

@@ -1,0 +1,56 @@
+{{- if and .Values.backends.postgres.enabled (not .Values.backends.postgres.external) }}
+{{- $fullname := include "tracey-shop.fullname" . -}}
+{{- $pg := .Values.backends.postgres -}}
+{{- $int := .Values.causelyIntegrations.postgres -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-postgres-init
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: postgres
+data:
+  # Mounted at /docker-entrypoint-initdb.d, which the official postgres image
+  # executes against POSTGRES_DB whenever PGDATA is empty. Persistence is off by
+  # default, so this runs on every Postgres start.
+  #
+  # shared_preload_libraries=pg_stat_statements is already set on the server's
+  # command line (see postgres.yaml) — that part cannot be done from SQL because
+  # it requires a restart.
+  10-causely-monitoring.sql: |
+    -- Causely's PostgreSQL scraper reads slow queries from pg_stat_statements.
+    -- Without this extension the Database entity still appears, but the
+    -- slow-query view stays empty.
+    CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+    {{- if $int.enabled }}
+    -- Read-only monitoring role for the Causely scraper. Separate from the
+    -- application user on purpose: the scraper needs stats and schema access,
+    -- never write access.
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{{ $int.username }}') THEN
+        CREATE ROLE {{ $int.username }} LOGIN PASSWORD '{{ $int.password }}';
+      ELSE
+        ALTER ROLE {{ $int.username }} LOGIN PASSWORD '{{ $int.password }}';
+      END IF;
+    END
+    $$;
+
+    -- pg_read_all_stats is the role the docs require; pg_monitor is a superset
+    -- that also covers pg_read_all_settings and pg_stat_scan_tables, which the
+    -- scraper uses for configuration and table statistics.
+    GRANT pg_read_all_stats TO {{ $int.username }};
+    GRANT pg_monitor TO {{ $int.username }};
+
+    GRANT CONNECT ON DATABASE {{ $pg.database }} TO {{ $int.username }};
+    GRANT USAGE ON SCHEMA public TO {{ $int.username }};
+
+    -- No application tables exist yet at init time, so the grant below is
+    -- mostly a no-op; ALTER DEFAULT PRIVILEGES is what actually covers the
+    -- tables internal/store creates later as the application user.
+    GRANT SELECT ON ALL TABLES IN SCHEMA public TO {{ $int.username }};
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+      GRANT SELECT ON TABLES TO {{ $int.username }};
+    {{- end }}
+{{- end }}

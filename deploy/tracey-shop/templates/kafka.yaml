@@ -1,0 +1,134 @@
+{{- if and .Values.backends.kafka.enabled (not .Values.backends.kafka.external) }}
+{{- $fullname := include "tracey-shop.fullname" . -}}
+{{- $kafka := .Values.backends.kafka -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-kafka
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: kafka
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: {{ include "tracey-shop.name" . }}
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: 9092
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}-kafka
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: kafka
+spec:
+  serviceName: {{ $fullname }}-kafka
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka
+      app.kubernetes.io/part-of: {{ include "tracey-shop.name" . }}
+  template:
+    metadata:
+      labels:
+        {{- include "tracey-shop.labels" . | nindent 8 }}
+        app.kubernetes.io/name: kafka
+        app.kubernetes.io/component: kafka
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: kafka
+          image: {{ $kafka.image }}
+          imagePullPolicy: IfNotPresent
+          env:
+            # Single-node KRaft: this pod is both broker and controller, so
+            # there is no ZooKeeper to run or explain during a demo.
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: broker,controller
+            - name: KAFKA_LISTENERS
+              value: PLAINTEXT://:9092,CONTROLLER://:9093
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: {{ printf "PLAINTEXT://%s-kafka:9092" $fullname }}
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: CONTROLLER
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: PLAINTEXT
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: 1@localhost:9093
+            # Single broker, so every replication factor must be 1.
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+              value: "0"
+            # Topics are created on first publish. Multiple partitions give the
+            # consumer-lag scenario something to accumulate across.
+            - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
+              value: "true"
+            - name: KAFKA_NUM_PARTITIONS
+              value: {{ $kafka.numPartitions | quote }}
+            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+              value: "1"
+            # Keep the log small: this is a demo, not a durable event store.
+            - name: KAFKA_LOG_RETENTION_HOURS
+              value: "6"
+            - name: KAFKA_LOG_SEGMENT_BYTES
+              value: "134217728"
+            - name: KAFKA_HEAP_OPTS
+              value: -Xmx768m -Xms512m
+            - name: CLUSTER_ID
+              value: tracey-shop-demo-cluster
+          ports:
+            - name: kafka
+              containerPort: 9092
+            - name: controller
+              containerPort: 9093
+          livenessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          readinessProbe:
+            tcpSocket:
+              port: 9092
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 40
+          resources:
+            {{- toYaml $kafka.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/kafka/data
+      {{- if not $kafka.persistence.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+  {{- if $kafka.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with $kafka.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $kafka.persistence.size }}
+  {{- end }}
+{{- end }}

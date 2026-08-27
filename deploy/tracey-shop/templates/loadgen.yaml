@@ -1,0 +1,86 @@
+{{- if .Values.loadgen.enabled }}
+{{- $fullname := include "tracey-shop.fullname" . -}}
+{{- $name := default "web-client" .Values.loadgen.name -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-{{ $name }}
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: {{ $name }}
+    app.kubernetes.io/component: loadgen
+spec:
+  replicas: {{ .Values.loadgen.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+      app.kubernetes.io/part-of: {{ include "tracey-shop.name" . }}
+  template:
+    metadata:
+      labels:
+        {{- include "tracey-shop.labels" . | nindent 8 }}
+        app.kubernetes.io/name: {{ $name }}
+        app.kubernetes.io/component: loadgen
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "tracey-shop.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: shopd
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            # ROLE selects the implementation and stays "loadgen" — it is a load
+            # generator internally. SERVICE_NAME is the identity Causely sees.
+            - name: ROLE
+              value: loadgen
+            - name: SERVICE_NAME
+              value: {{ $name | quote }}
+            - name: LOAD_TARGET_URL
+              value: {{ printf "http://%s-storefront-bff:%d" $fullname (int (index .Values.services "storefront-bff").port) | quote }}
+            - name: LOAD_RPS
+              value: {{ .Values.loadgen.rps | quote }}
+            - name: LOAD_CONCURRENCY
+              value: {{ .Values.loadgen.concurrency | quote }}
+            - name: LOAD_MIX_BROWSE
+              value: {{ .Values.loadgen.mix.browse | quote }}
+            - name: LOAD_MIX_SEARCH
+              value: {{ .Values.loadgen.mix.search | quote }}
+            - name: LOAD_MIX_VIEW_PRODUCT
+              value: {{ .Values.loadgen.mix.viewProduct | quote }}
+            - name: LOAD_MIX_ADD_TO_CART
+              value: {{ .Values.loadgen.mix.addToCart | quote }}
+            - name: LOAD_MIX_CHECKOUT
+              value: {{ .Values.loadgen.mix.checkout | quote }}
+            {{- include "tracey-shop.commonEnv" (dict "root" .) | nindent 12 }}
+          ports:
+            - name: admin
+              containerPort: {{ int .Values.adminPort }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.loadgen.resources | nindent 12 }}
+{{- end }}

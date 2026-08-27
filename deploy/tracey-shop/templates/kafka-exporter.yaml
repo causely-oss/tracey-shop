@@ -1,0 +1,146 @@
+{{- $int := .Values.causelyIntegrations.kafka -}}
+{{- if $int.enabled }}
+{{- $fullname := include "tracey-shop.fullname" . -}}
+{{- $brokers := include "tracey-shop.kafkaBrokers" . -}}
+{{- /*
+Kafka consumer-lag metrics for Causely.
+
+Traces alone can never produce consumer lag. They create the Topic and
+ConsumerTopicAccess entities — and the `ConsumerGroup` / `ConsumesTopic` labels
+Causely matches on, which come from the messaging.consumer.group.name attribute
+set in internal/transport/kafkax — but the `Lag` attribute itself is only ever
+populated from a metric source. Without one, `Lag_High` ("Consumer Lag") can
+never fire and the fraud-lag scenario produces no Causely symptom at all, even
+though real lag is piling up in Kafka.
+
+This deploys the standard danielqsj kafka_exporter, which publishes
+`kafka_consumergroup_lag{topic=...,consumergroup=...}`. That is exactly what
+Causely's shipped Prometheus config already queries — no change to the Causely
+release is needed:
+
+    kafka:
+      entities:
+      - entity: {topic_access: {topic: topic, consumer_group: consumergroup}}
+        discovery: [{topic_access: {topic_label_key: topic,
+                                   consumer_group_label_key: consumergroup}}]
+        metrics:
+        - attribute: Lag
+          query: max(kafka_consumergroup_lag) by (namespace, topic, consumergroup)
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-kafka-exporter
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: kafka-exporter
+  annotations:
+    # For Prometheus installs that use annotation-based discovery rather than
+    # ServiceMonitors.
+    prometheus.io/scrape: "true"
+    prometheus.io/port: {{ $int.port | quote }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kafka-exporter
+    app.kubernetes.io/part-of: {{ include "tracey-shop.name" . }}
+  ports:
+    - name: metrics
+      port: {{ int $int.port }}
+      targetPort: metrics
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-kafka-exporter
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: kafka-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka-exporter
+      app.kubernetes.io/part-of: {{ include "tracey-shop.name" . }}
+  template:
+    metadata:
+      labels:
+        {{- include "tracey-shop.labels" . | nindent 8 }}
+        app.kubernetes.io/name: kafka-exporter
+        app.kubernetes.io/component: kafka-exporter
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: kafka-exporter
+          image: {{ $int.image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            {{- range (splitList "," $brokers) }}
+            - --kafka.server={{ . }}
+            {{- end }}
+            - --web.listen-address=:{{ int $int.port }}
+            # kafka_consumergroup_lag is only emitted for groups with committed
+            # offsets; the demo's fraud-workers and notification-workers groups
+            # both commit, so no filtering is needed.
+            - --topic.filter={{ $int.topicFilter }}
+            - --group.filter={{ $int.groupFilter }}
+          ports:
+            - name: metrics
+              containerPort: {{ int $int.port }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 20
+          resources:
+            {{- toYaml $int.resources | nindent 12 }}
+{{- if $int.serviceMonitor.enabled }}
+---
+{{/*
+The ServiceMonitor requires the prometheus-operator CRD. Disabled in
+values-kind.yaml, where there is no operator.
+
+The `target` relabeling is not cosmetic: Causely's first kafka entity block
+discovers Topics via `endpoint: {uri: "target"}`, so without this label the
+kafka_topic_partitions metric cannot associate a Topic with the broker Service.
+Lag itself is discovered from the topic/consumergroup labels and does not need it.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $fullname }}-kafka-exporter
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: kafka-exporter
+    {{- with $int.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka-exporter
+      app.kubernetes.io/part-of: {{ include "tracey-shop.name" . }}
+  endpoints:
+    - port: metrics
+      interval: {{ $int.serviceMonitor.interval }}
+      relabelings:
+        - action: replace
+          replacement: {{ (splitList "," $brokers) | first | quote }}
+          targetLabel: target
+{{- end }}
+{{- end }}

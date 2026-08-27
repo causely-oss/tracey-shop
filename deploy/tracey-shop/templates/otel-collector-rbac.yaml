@@ -1,0 +1,50 @@
+{{- if .Values.otelCollector.enabled }}
+{{- $name := include "tracey-shop.collectorName" . -}}
+{{- /*
+The k8sattributes processor needs cluster-wide read access to pods, namespaces
+and replicasets. Without it the processor silently enriches nothing, Causely
+cannot resolve a span's workload, and every span is dropped on ingest — the
+single most common reason a demo app never shows up in the topology.
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: otel-collector
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: otel-collector
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["extensions"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: otel-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}-{{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

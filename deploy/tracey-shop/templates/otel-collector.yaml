@@ -1,0 +1,74 @@
+{{- if .Values.otelCollector.enabled }}
+{{- $name := include "tracey-shop.collectorName" . -}}
+{{- $c := .Values.otelCollector -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: otel-collector
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/part-of: {{ include "tracey-shop.name" . }}
+  ports:
+    - name: otlp-grpc
+      port: {{ int $c.ports.grpc }}
+      targetPort: {{ int $c.ports.grpc }}
+      protocol: TCP
+    - name: otlp-http
+      port: {{ int $c.ports.http }}
+      targetPort: {{ int $c.ports.http }}
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: otel-collector
+spec:
+  replicas: {{ $c.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+      app.kubernetes.io/part-of: {{ include "tracey-shop.name" . }}
+  template:
+    metadata:
+      labels:
+        {{- include "tracey-shop.labels" . | nindent 8 }}
+        app.kubernetes.io/name: otel-collector
+        app.kubernetes.io/component: otel-collector
+      annotations:
+        # Roll the collector when its config changes, so a helm upgrade that
+        # repoints the exporter takes effect without a manual restart.
+        checksum/config: {{ include (print $.Template.BasePath "/otel-collector-config.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: collector
+          image: {{ $c.image }}
+          imagePullPolicy: IfNotPresent
+          args: ["--config=/conf/config.yaml"]
+          ports:
+            - name: otlp-grpc
+              containerPort: {{ int $c.ports.grpc }}
+            - name: otlp-http
+              containerPort: {{ int $c.ports.http }}
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+{{- end }}

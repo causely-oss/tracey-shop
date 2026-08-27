@@ -1,0 +1,47 @@
+{{- $web := .Values.storefrontWeb -}}
+{{- if and $web.enabled $web.ingress.enabled }}
+{{- $fullname := include "tracey-shop.fullname" . -}}
+{{- $port := (index .Values.services "storefront-bff").port -}}
+{{/*
+Optional external route to the browser storefront.
+
+Off by default — `make port-forward` covers a laptop demo. Turn it on when you
+need a real hostname: a demo several people watch at once, or a browser-based
+tool pointed at the storefront that will not accept `localhost` as an origin.
+
+The chart has no ingress controller of its own; this assumes one already exists
+in the cluster.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}-storefront
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: storefront-bff
+  {{- with $web.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $web.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with $web.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - {{ if $web.ingress.host }}host: {{ $web.ingress.host | quote }}
+      {{ end }}http:
+        paths:
+          # A single catch-all: the UI and its /api/* calls are the same origin
+          # and the same Service, which is the whole point of embedding it.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-storefront-bff
+                port:
+                  number: {{ int $port }}
+{{- end }}

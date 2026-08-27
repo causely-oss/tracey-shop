@@ -1,0 +1,54 @@
+# Overrides for a real (multi-node) Kubernetes cluster.
+#
+# Merged on top of values.yaml, so this file only carries what differs: more
+# headroom for the backends and the collector, and more load, because a shared
+# cluster absorbs more traffic than a laptop — and more traffic makes Causely's
+# symptoms cross their thresholds sooner during a demo.
+#
+# The image, the mediator endpoint and the service topology all come from
+# values.yaml. Nothing here is cloud-provider specific.
+#
+# Usage:
+#   make deploy-cloud MEDIATOR=mediator.causely:4317
+#
+# or, without make:
+#   helm upgrade --install tracey-shop deploy/tracey-shop \
+#     -n tracey-shop --create-namespace \
+#     -f deploy/tracey-shop/values-cloud.yaml
+
+otelCollector:
+  resources:
+    requests: { cpu: 200m, memory: 256Mi }
+    limits: { cpu: "2", memory: 1Gi }
+
+backends:
+  # Persistence is off, deliberately. The schema and seed data are applied
+  # idempotently at startup, so Postgres re-seeds itself after a restart; the
+  # only thing lost is order history, which no scenario depends on. Leaving PVCs
+  # out keeps `helm uninstall` clean on a cluster you share.
+  #
+  # To make them durable, uncomment below and set a storageClass your cluster
+  # actually has (`kubectl get storageclass`). Check `allowVolumeExpansion` on
+  # it before you pick a size — several common defaults are false, and you
+  # cannot grow the volume later.
+  postgres:
+    # persistence:
+    #   enabled: true
+    #   size: 10Gi
+    #   storageClass: ""
+    resources:
+      requests: { cpu: 200m, memory: 256Mi }
+      limits: { cpu: "2", memory: 1Gi }
+
+  kafka:
+    # persistence:
+    #   enabled: true
+    #   size: 20Gi
+    #   storageClass: ""
+    resources:
+      requests: { cpu: 300m, memory: 768Mi }
+      limits: { cpu: "2", memory: 2Gi }
+
+loadgen:
+  rps: 40
+  concurrency: 24

@@ -1,0 +1,225 @@
+{{- $int := .Values.causelyIntegrations.postgres -}}
+{{- if $int.enabled }}
+{{- $fullname := include "tracey-shop.fullname" . -}}
+{{- $pg := .Values.backends.postgres -}}
+{{- /*
+Credentials for Causely's PostgreSQL scraper.
+
+This Secret lives in the MEDIATOR's namespace, not the application's, because
+that is where the scraper looks. Note that on a split Causely install the
+mediator is not in `causely` — see docs/causely-setup.md. Run `make mediators`
+to find it.
+
+The `causely.ai/scraper` label is what makes Causely pick this up
+automatically. That matters for this demo: it means the integration comes up
+with `helm install` and needs no edit to the Causely release itself, so a
+redeploy of tracey-shop re-establishes the integration on its own.
+*/}}
+{{- $host := $int.host }}
+{{- if not $host }}
+  {{- if $pg.external }}
+    {{- $host = (splitList ":" $pg.external | first) }}
+  {{- else }}
+    {{- /* Must be the FQDN Causely's Kubernetes scraper discovers for this
+           Service, or it cannot link the Database entity to the workload. */}}
+    {{- $host = printf "%s-postgres.%s.svc.cluster.local" $fullname .Release.Namespace }}
+  {{- end }}
+{{- end }}
+{{- $database := default $pg.database $int.database }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $int.secretName }}
+  namespace: {{ $int.mediatorNamespace }}
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: causely-postgres-integration
+    causely.ai/scraper: {{ $int.scraperLabel | quote }}
+  annotations:
+    # Recorded so it is obvious where this secret came from when found in
+    # someone else's namespace.
+    tracey-shop.causely.ai/managed-by-release: {{ printf "%s/%s" .Release.Namespace .Release.Name | quote }}
+type: Opaque
+stringData:
+  username: {{ $int.username | quote }}
+  password: {{ $int.password | quote }}
+  host: {{ $host | quote }}
+  port: {{ $int.port | quote }}
+  database: {{ $database | quote }}
+  {{- with $int.sslmode }}
+  sslmode: {{ . | quote }}
+  {{- end }}
+  {{- with $int.hostOverwrite }}
+  host_overwrite: {{ . | quote }}
+  {{- end }}
+{{- if $int.readinessHook.enabled }}
+---
+{{/*
+Retrigger scraper discovery once the database can actually authenticate.
+
+The mediator initialises a scraper ONCE per discovery event and does not retry a
+failed initialisation. On a fresh install — and on any upgrade that recreates
+Postgres — Helm writes this Secret at the same moment Postgres is starting from
+an empty volume, so the monitoring role does not exist yet. The mediator tries,
+gets `password authentication failed`, and gives up until the Secret changes
+again. Observed on a real install:
+
+  auto discovered scraper {"secret":"tracey-shop-postgres-credentials",...}
+  scraper initialization failed {... "failed to ping PostgreSQL database:
+      pq: password authentication failed for user "causely_monitor" (28P01)"}
+
+This Job closes that race: an initContainer blocks until it can authenticate as
+the monitoring user, and only then does the main container touch an annotation on
+the Secret — which is a change the mediator's watch picks up, re-running
+discovery against a database that is now ready.
+*/}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}-db-integration
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: causely-postgres-integration
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullname }}-db-integration
+  namespace: {{ $int.mediatorNamespace }}
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: causely-postgres-integration
+rules:
+  # Scoped to this one Secret: enough to nudge discovery, nothing more.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $int.secretName | quote }}]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullname }}-db-integration
+  namespace: {{ $int.mediatorNamespace }}
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: causely-postgres-integration
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullname }}-db-integration
+subjects:
+  - kind: ServiceAccount
+    name: {{ $fullname }}-db-integration
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-db-integration
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: causely-postgres-integration
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    # Runs after the RBAC above and after the workloads are up.
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  # Bounded so a broken database can never wedge a deploy.
+  activeDeadlineSeconds: {{ $int.readinessHook.timeoutSeconds }}
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "tracey-shop.labels" . | nindent 8 }}
+        app.kubernetes.io/name: causely-postgres-integration
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $fullname }}-db-integration
+      initContainers:
+        # Block until the monitoring role can authenticate. This is the whole
+        # point of the Job — the annotation below must not land before then.
+        - name: wait-for-db
+          image: {{ $pg.image }}
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-db-integration-probe
+                  key: password
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              deadline=$(( $(date +%s) + {{ $int.readinessHook.timeoutSeconds }} - 30 ))
+              until psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
+                    -tAc 'SELECT 1' >/dev/null 2>&1; do
+                if [ "$(date +%s)" -ge "$deadline" ]; then
+                  echo "timed out waiting to authenticate as $DB_USER at $DB_HOST:$DB_PORT" >&2
+                  exit 1
+                fi
+                echo "waiting for $DB_USER to be able to authenticate at $DB_HOST:$DB_PORT ..."
+                sleep 5
+              done
+              echo "authenticated as $DB_USER; the Causely scraper can now connect"
+          envFrom:
+            - configMapRef:
+                name: {{ $fullname }}-db-integration
+      containers:
+        - name: nudge-discovery
+          image: {{ $int.readinessHook.kubectlImage }}
+          imagePullPolicy: IfNotPresent
+          # No shell: registry.k8s.io/kubectl is distroless, so this must be a
+          # direct exec with literal args. The annotation value is the release
+          # revision, which increments on every upgrade — that guarantees the
+          # patch is a real change and therefore re-fires the mediator's watch,
+          # without needing `date` at runtime.
+          command: ["kubectl"]
+          args:
+            - "--namespace"
+            - {{ $int.mediatorNamespace | quote }}
+            - "annotate"
+            - "secret"
+            - {{ $int.secretName | quote }}
+            - "--overwrite"
+            - {{ printf "tracey-shop.causely.ai/db-ready-revision=%d" (int .Release.Revision) | quote }}
+---
+# The probe needs the same connection details as the Secret above, but in the
+# release's own namespace: a pod cannot mount a Secret from another namespace.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-db-integration
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: causely-postgres-integration
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  DB_HOST: {{ $host | quote }}
+  DB_PORT: {{ $int.port | quote }}
+  DB_USER: {{ $int.username | quote }}
+  DB_NAME: {{ $database | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $fullname }}-db-integration-probe
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: causely-postgres-integration
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+type: Opaque
+stringData:
+  password: {{ $int.password | quote }}
+{{- end }}
+{{- end }}

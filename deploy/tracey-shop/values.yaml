@@ -1,0 +1,469 @@
+# Tracey Shop — Causely demo application.
+#
+# Defaults are tuned for a clean baseline: generous resource limits so no
+# workload trips a Causely memory or CPU-throttling symptom at steady state, and
+# every fault switched off. Use values-kind.yaml for a laptop-sized install.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  # Multi-arch (linux/amd64 + linux/arm64), published by
+  # .github/workflows/release.yaml. Nothing needs building to run the demo.
+  #
+  # Building your own: `make push REGISTRY=... IMAGE_NAME=...`, then set this.
+  repository: ghcr.io/causely-oss/tracey-shop
+  # Empty means the chart's appVersion, so the chart and the image it pulls can
+  # never drift apart.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+global:
+  logLevel: info
+  # Becomes deployment.environment on every span.
+  env: demo
+  # Timeout for outbound calls between services.
+  requestTimeout: 5s
+
+serviceAccount:
+  create: true
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ---------------------------------------------------------------------------
+# Telemetry
+# ---------------------------------------------------------------------------
+
+otel:
+  # Where the application pods send OTLP. Leave empty to use the bundled
+  # collector below; set it to send straight to a collector you already run.
+  #
+  # NOTE: if you point apps at your own collector, that collector must run the
+  # k8sattributes processor. Causely resolves a span's workload from
+  # k8s.pod.uid or k8s.namespace.name + k8s.pod.name; without them it drops the
+  # span and the service never appears in the topology.
+  endpoint: ""
+  # 1.0 keeps full fidelity, which is what a demo wants.
+  sampling: 1.0
+
+otelCollector:
+  enabled: true
+  image: otel/opentelemetry-collector-contrib:0.137.0
+  replicas: 1
+  # OTLP receiver ports exposed to the application pods.
+  ports:
+    grpc: 4317
+    http: 4318
+
+  exporter:
+    # Causely's documented OTLP ingest: mediator.causely:4317, gRPC, plaintext.
+    endpoint: mediator.causely:4317
+    # grpc | http
+    protocol: grpc
+    insecure: true
+
+  # Causely ignores INTERNAL spans, so dropping them here saves ingest volume
+  # without losing any topology.
+  filterInternalSpans: true
+  # Also forward OTLP metrics to the same endpoint.
+  metricsPipeline: true
+  # basic | normal | detailed — detailed prints full spans, which is what
+  # scripts/verify-traces.sh reads to check the attribute contract.
+  debugVerbosity: basic
+
+  # Extra exporters merged into the traces pipeline, e.g. to fan out to Tempo:
+  #   extraExporters:
+  #     otlp/tempo:
+  #       endpoint: tempo.observability:4317
+  #       tls: { insecure: true }
+  extraExporters: {}
+
+  resources:
+    requests: { cpu: 100m, memory: 192Mi }
+    limits: { cpu: "1", memory: 768Mi }
+
+# ---------------------------------------------------------------------------
+# Browser storefront
+#
+# A dependency-free single-page shop, embedded in the binary and served by
+# storefront-bff on its existing port. The service named `web-client` is a
+# headless Go HTTP client, not a browser, so this is the demo's only real
+# user-facing surface — and the only place an injected fault becomes something a
+# person watching can actually see.
+#
+# Serving it from storefront-bff keeps it same-origin with the /api routes, so no
+# CORS is needed. Asset requests bypass tracing and the fault gate (see
+# httpx.Server.Static), so they neither appear as HTTPPath entities in Causely nor
+# get injected latency during a scenario.
+#
+# Reach it with `make port-forward` → http://localhost:8080
+# ---------------------------------------------------------------------------
+
+storefrontWeb:
+  enabled: true
+
+  # Off by default; `make port-forward` is enough for a demo. Turn this on when
+  # you have a hostname — a demo several people watch at once, or a
+  # browser-based tool that will not accept `localhost` as an origin.
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    annotations: {}
+    tls: []
+
+# ---------------------------------------------------------------------------
+# Order-intake backpressure
+#
+# checkout-api watches how far fraud review has fallen behind on the `orders`
+# topic and starts shedding and delaying order intake once the backlog is deep.
+# This is ordinary application behaviour, not a fault — a checkout service that
+# publishes to a review queue it cannot outrun has to stop accepting orders
+# eventually.
+#
+# It is what gives the fraud-lag scenario real service impact, and therefore what
+# lets Causely classify the resulting "Slow Consumer" root cause as **Urgent**:
+# urgency requires an SLO to be actually at risk plus two live symptoms, and
+# consumer lag on its own only carries the model's static weight (Low).
+# It also makes Causely's own predicted chain come true —
+# Lag.High -> Topic.Clogged -> Producers.Clogged -> Starvation -> producer SLO.
+#
+# At a clean baseline the backlog sits near zero, so none of this engages and
+# nothing is logged.
+# ---------------------------------------------------------------------------
+
+orderIntakeBackpressure:
+  enabled: true
+  # Deliberately well above any transient backlog — a fraud-detector restart
+  # leaves only tens of messages behind — so normal operation never sheds.
+  # At ~2 orders/sec a stalled consumer crosses this in roughly four minutes.
+  lagThreshold: 500
+  # Fraction of orders rejected while over the threshold, with gRPC UNAVAILABLE
+  # (which otelgrpc maps to an Error span status — ResourceExhausted does NOT,
+  # and would leave the error rate invisible to Causely).
+  # 0.25 puts checkout-api far past its 1% error budget, so its
+  # success SLO goes at risk quickly, and pushes ~1.25% of storefront-bff's
+  # traffic into errors as well — a second impacted service.
+  rejectRate: 0.25
+  # Queueing delay on the orders that are still accepted, which moves the
+  # latency SLO too, not just the success SLO.
+  latency: 300ms
+  pollInterval: 15s
+
+# ---------------------------------------------------------------------------
+# Causely native integrations
+#
+# These wire the demo's backends into Causely's own scrapers, which is separate
+# from the OTel trace pipeline above. Traces give Causely the service topology;
+# the PostgreSQL scraper adds the database as a first-class entity with table
+# schemas, lock monitoring and slow-query analysis from pg_stat_statements.
+#
+# It deploys with the chart, so a `helm upgrade` re-establishes it — nothing to
+# set up by hand and nothing to edit in the Causely release itself.
+# ---------------------------------------------------------------------------
+
+causelyIntegrations:
+  # Kafka consumer-lag metrics.
+  #
+  # Required for the fraud-lag scenario to produce anything in Causely. Traces
+  # create the Topic and ConsumerTopicAccess entities and the ConsumerGroup /
+  # ConsumesTopic labels Causely matches on, but the `Lag` attribute itself only
+  # ever comes from a metric source — so without this, real lag piles up in
+  # Kafka and Causely stays silent.
+  #
+  # Publishes kafka_consumergroup_lag, which is exactly what Causely's shipped
+  # Prometheus config already queries. No change to the Causely release needed.
+  kafka:
+    enabled: true
+    image: danielqsj/kafka-exporter:v1.9.0
+    port: 9308
+    # kafka_exporter's own filters; the demo wants everything.
+    topicFilter: ".*"
+    groupFilter: ".*"
+    resources:
+      requests: { cpu: 25m, memory: 48Mi }
+      limits: { cpu: 300m, memory: 192Mi }
+    serviceMonitor:
+      # Needs the prometheus-operator CRD. Turn off on clusters without it
+      # (values-kind.yaml already does).
+      enabled: true
+      interval: 30s
+      # Only needed if your Prometheus sets a serviceMonitorSelector. Many
+      # kube-prometheus-stack installs leave the selectors empty and pick up
+      # every ServiceMonitor, in which case leave this empty. If yours filters,
+      # add e.g. {release: kube-prometheus-stack}.
+      labels: {}
+
+  postgres:
+    enabled: true
+
+    # The namespace Causely's MEDIATOR runs in — the scraper reads secrets from
+    # its own namespace, so the chart creates the Secret (plus a Role and
+    # RoleBinding) there rather than in the release namespace.
+    #
+    # `causely` is right for a standard install. On a SPLIT install the mediator
+    # lives in a per-environment namespace and `causely` holds only the backend;
+    # run `make mediators` to discover yours.
+    mediatorNamespace: causely
+
+    secretName: tracey-shop-postgres-credentials
+
+    # This label is what makes Causely autodiscover the secret, so the
+    # integration needs no change to the Causely release.
+    scraperLabel: Postgresql
+
+    # A dedicated read-only role, created by the Postgres init SQL in
+    # templates/postgres-init-configmap.yaml and granted pg_read_all_stats +
+    # pg_monitor. Deliberately separate from the application user: the scraper
+    # needs stats and schema access, never writes.
+    username: causely_monitor
+    # Demo-only credential, deliberately committed so `helm install` needs no
+    # prerequisites. Override for anything that outlives a demo.
+    password: causely-monitor-demo-password
+
+    # Empty means the bundled Postgres. This MUST be the FQDN Causely's
+    # Kubernetes scraper discovers for the Service, or it cannot link the
+    # Database entity to the workload that hosts it.
+    host: ""
+    port: 5432
+    # Empty means backends.postgres.database.
+    database: ""
+    # The bundled Postgres has no TLS. Set to require/verify-full for a real one.
+    sslmode: disable
+    # Only for proxied databases (common on GCP Cloud SQL): the real database
+    # address behind the proxy.
+    hostOverwrite: ""
+
+    # Closes a real race. The mediator initialises a scraper once per discovery
+    # event and does NOT retry a failed one. On a fresh install the secret is
+    # written while Postgres is still starting from an empty volume, so the
+    # monitoring role does not exist yet — the scraper gets
+    # "password authentication failed" and gives up until the secret changes.
+    #
+    # This post-install/post-upgrade Job waits until it can authenticate, then
+    # touches an annotation on the secret to re-fire discovery. Without it, the
+    # integration silently fails to come up on roughly every fresh install.
+    readinessHook:
+      enabled: true
+      kubectlImage: registry.k8s.io/kubectl:v1.33.1
+      # Hard bound, so a broken database can never wedge a deploy.
+      timeoutSeconds: 300
+
+# ---------------------------------------------------------------------------
+# Backends
+# ---------------------------------------------------------------------------
+
+backends:
+  postgres:
+    enabled: true
+    # Set to host:port to use an existing Postgres instead of the bundled one.
+    external: ""
+    image: postgres:17-alpine
+    database: shop
+    username: shop
+    # Demo-only credential, deliberately committed so `helm install` needs no
+    # prerequisites. Override for anything that outlives a demo.
+    password: shop-demo-password
+    persistence:
+      enabled: false
+      size: 2Gi
+      storageClass: ""
+    resources:
+      requests: { cpu: 100m, memory: 192Mi }
+      limits: { cpu: "1", memory: 768Mi }
+
+  valkey:
+    enabled: true
+    external: ""
+    image: valkey/valkey:8-alpine
+    maxmemory: 192mb
+    resources:
+      requests: { cpu: 50m, memory: 96Mi }
+      limits: { cpu: 500m, memory: 384Mi }
+
+  kafka:
+    enabled: true
+    external: ""
+    image: apache/kafka:3.9.1
+    # Auto-created topics get this many partitions, which gives the consumer-lag
+    # scenario something to spread across.
+    numPartitions: 3
+    topics:
+      orders: orders
+      ledgerEvents: ledger.events
+      notifications: notifications
+    consumerGroups:
+      fraud: fraud-workers
+      notifications: notification-workers
+    persistence:
+      enabled: false
+      size: 4Gi
+      storageClass: ""
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits: { cpu: "2", memory: 1536Mi }
+
+# ---------------------------------------------------------------------------
+# Load generator
+# ---------------------------------------------------------------------------
+
+loadgen:
+  enabled: true
+  # The deployed name. The traffic source appears in Causely's topology under
+  # this name, so it is deliberately not "loadgen" — a service called loadgen
+  # announces that the application is synthetic. The internal ROLE stays
+  # `loadgen`; only the identity changes, the same way the three partner
+  # simulators share one role under different names.
+  name: web-client
+  replicas: 1
+  # Requests per second driven at storefront-bff. Change live without a helm
+  # upgrade: scripts/load.sh 80
+  rps: 20
+  concurrency: 16
+  # Relative weights; normalised at runtime.
+  mix:
+    browse: 50
+    search: 20
+    viewProduct: 15
+    addToCart: 10
+    checkout: 5
+  resources:
+    requests: { cpu: 100m, memory: 64Mi }
+    limits: { cpu: "1", memory: 256Mi }
+
+# ---------------------------------------------------------------------------
+# Application services
+#
+# templates/services.yaml ranges over this map. Each key becomes a Deployment
+# and (unless protocol is "none") a Service. `role` defaults to the key; set it
+# explicitly when several deployments share one implementation, as the three
+# partner simulators do.
+#
+# protocol: http | grpc | none  ("none" = a Kafka consumer with no inbound port)
+# ---------------------------------------------------------------------------
+
+# Default resources for any service that does not override them. Deliberately
+# roomy: Go services idle around 20-40Mi, so a 256Mi limit keeps utilisation
+# near 15% and Causely's clean baseline stays free of MemoryUtilization_High.
+defaultResources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { cpu: 500m, memory: 256Mi }
+
+# Admin port. Health probes and the fault-injection API only — never traced.
+adminPort: 8090
+
+services:
+  # --- layer 1: edge ------------------------------------------------------
+  storefront-bff:
+    enabled: true
+    replicas: 2
+    protocol: http
+    port: 8080
+
+  # --- layer 2 -----------------------------------------------------------
+  catalog-api:
+    enabled: true
+    replicas: 2
+    protocol: grpc
+    port: 9001
+
+  cart-service:
+    enabled: true
+    replicas: 2
+    protocol: http
+    port: 8081
+
+  checkout-api:
+    enabled: true
+    replicas: 2
+    protocol: grpc
+    port: 9002
+
+  # --- layer 3 -----------------------------------------------------------
+  inventory-svc:
+    enabled: true
+    replicas: 2
+    protocol: grpc
+    port: 9003
+    # Carries the heaviest Postgres read load.
+    resources:
+      requests: { cpu: 100m, memory: 96Mi }
+      limits: { cpu: "1", memory: 384Mi }
+
+  pricing-engine:
+    enabled: true
+    replicas: 2
+    protocol: grpc
+    port: 9004
+
+  payment-gw:
+    enabled: true
+    replicas: 2
+    protocol: grpc
+    port: 9005
+
+  shipping-quote:
+    enabled: true
+    replicas: 1
+    protocol: http
+    port: 8082
+
+  # --- layer 4 -----------------------------------------------------------
+  ledger-svc:
+    enabled: true
+    replicas: 2
+    protocol: grpc
+    port: 9006
+
+  fraud-detector:
+    enabled: true
+    replicas: 1
+    # Kafka consumer: no inbound port, so no Service is rendered.
+    protocol: none
+
+  # --- layer 5 -----------------------------------------------------------
+  risk-model:
+    enabled: true
+    replicas: 1
+    protocol: grpc
+    port: 9007
+
+  notification-worker:
+    enabled: true
+    replicas: 1
+    protocol: none
+
+  # --- simulated third parties -------------------------------------------
+  stripe-sim:
+    enabled: true
+    replicas: 1
+    protocol: http
+    port: 8086
+    role: partner-sim
+    partnerName: acme-payments
+    # Third parties are never instant; this shapes the latency graph.
+    partnerLatency: 35ms
+
+  carrier-sim:
+    enabled: true
+    replicas: 1
+    protocol: http
+    port: 8085
+    role: partner-sim
+    partnerName: swiftship
+    partnerLatency: 45ms
+
+  email-sim:
+    enabled: true
+    replicas: 1
+    protocol: http
+    port: 8087
+    role: partner-sim
+    partnerName: mailwing
+    partnerLatency: 20ms

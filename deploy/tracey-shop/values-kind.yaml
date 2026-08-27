@@ -1,0 +1,99 @@
+# Laptop-sized overrides for a kind cluster.
+#
+# Single replicas and tighter requests, but limits stay well above steady-state
+# usage — the clean baseline must not trip Causely's MemoryUtilization_High or
+# CPUThrottled_High symptoms, which is exactly the trap that forces other demo
+# apps to ship memory-tuning overlays.
+
+# No image override: the published multi-arch image is pulled from GHCR and works
+# on kind unchanged. For a local build loop, `make kind-load && make deploy`
+# side-loads a locally built image and sets pullPolicy=Never for you.
+
+loadgen:
+  rps: 10
+  concurrency: 8
+  resources:
+    requests: { cpu: 50m, memory: 48Mi }
+    limits: { cpu: 500m, memory: 192Mi }
+
+defaultResources:
+  requests: { cpu: 25m, memory: 48Mi }
+  limits: { cpu: 400m, memory: 192Mi }
+
+otelCollector:
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+causelyIntegrations:
+  kafka:
+    # kind has no prometheus-operator, so the ServiceMonitor CRD does not exist.
+    # The exporter still runs and can be scraped by annotation-based discovery or
+    # port-forwarded for a manual check.
+    serviceMonitor:
+      enabled: false
+    resources:
+      requests: { cpu: 25m, memory: 32Mi }
+      limits: { cpu: 200m, memory: 128Mi }
+
+backends:
+  postgres:
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits: { cpu: 500m, memory: 512Mi }
+  valkey:
+    maxmemory: 96mb
+    resources:
+      requests: { cpu: 25m, memory: 64Mi }
+      limits: { cpu: 300m, memory: 256Mi }
+  kafka:
+    numPartitions: 3
+    resources:
+      requests: { cpu: 150m, memory: 448Mi }
+      limits: { cpu: "1", memory: 1280Mi }
+
+# One replica each; the topology is unchanged, only the pod count.
+services:
+  storefront-bff: { enabled: true, replicas: 1, protocol: http, port: 8080 }
+  catalog-api: { enabled: true, replicas: 1, protocol: grpc, port: 9001 }
+  cart-service: { enabled: true, replicas: 1, protocol: http, port: 8081 }
+  checkout-api: { enabled: true, replicas: 1, protocol: grpc, port: 9002 }
+  inventory-svc:
+    enabled: true
+    replicas: 1
+    protocol: grpc
+    port: 9003
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { cpu: 500m, memory: 256Mi }
+  pricing-engine: { enabled: true, replicas: 1, protocol: grpc, port: 9004 }
+  payment-gw: { enabled: true, replicas: 1, protocol: grpc, port: 9005 }
+  shipping-quote: { enabled: true, replicas: 1, protocol: http, port: 8082 }
+  ledger-svc: { enabled: true, replicas: 1, protocol: grpc, port: 9006 }
+  fraud-detector: { enabled: true, replicas: 1, protocol: none }
+  risk-model: { enabled: true, replicas: 1, protocol: grpc, port: 9007 }
+  notification-worker: { enabled: true, replicas: 1, protocol: none }
+  stripe-sim:
+    enabled: true
+    replicas: 1
+    protocol: http
+    port: 8086
+    role: partner-sim
+    partnerName: acme-payments
+    partnerLatency: 35ms
+  carrier-sim:
+    enabled: true
+    replicas: 1
+    protocol: http
+    port: 8085
+    role: partner-sim
+    partnerName: swiftship
+    partnerLatency: 45ms
+  email-sim:
+    enabled: true
+    replicas: 1
+    protocol: http
+    port: 8087
+    role: partner-sim
+    partnerName: mailwing
+    partnerLatency: 20ms

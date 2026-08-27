@@ -1,0 +1,19 @@
+apiVersion: v2
+name: tracey-shop
+description: |
+  A realistic e-commerce demo application for showcasing Causely's root-cause
+  analysis. Five layers of services communicating over HTTP, gRPC, Postgres,
+  Valkey and Kafka, fully instrumented with OpenTelemetry traces, with a
+  configurable load generator and runtime fault injection.
+type: application
+home: https://github.com/causely-oss/tracey-shop
+sources:
+  - https://github.com/causely-oss/tracey-shop
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - causely
+  - demo
+  - opentelemetry
+  - ecommerce
+  - microservices

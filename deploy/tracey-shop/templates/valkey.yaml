@@ -1,0 +1,77 @@
+{{- if and .Values.backends.valkey.enabled (not .Values.backends.valkey.external) }}
+{{- $fullname := include "tracey-shop.fullname" . -}}
+{{- $vk := .Values.backends.valkey -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-valkey
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: valkey
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: valkey
+    app.kubernetes.io/part-of: {{ include "tracey-shop.name" . }}
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-valkey
+  labels:
+    {{- include "tracey-shop.labels" . | nindent 4 }}
+    app.kubernetes.io/name: valkey
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: valkey
+      app.kubernetes.io/part-of: {{ include "tracey-shop.name" . }}
+  template:
+    metadata:
+      labels:
+        {{- include "tracey-shop.labels" . | nindent 8 }}
+        app.kubernetes.io/name: valkey
+        app.kubernetes.io/component: valkey
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: valkey
+          image: {{ $vk.image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            # A bounded cache with LRU eviction: the demo's cache is a cache,
+            # not a database, and an unbounded one would eventually trip a
+            # memory symptom that has nothing to do with the scenario.
+            - --maxmemory
+            - {{ $vk.maxmemory | quote }}
+            - --maxmemory-policy
+            - allkeys-lru
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+          ports:
+            - name: valkey
+              containerPort: 6379
+          livenessProbe:
+            exec:
+              command: ["valkey-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command: ["valkey-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 20
+          resources:
+            {{- toYaml $vk.resources | nindent 12 }}
+{{- end }}

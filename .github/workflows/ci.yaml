@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l $(find . -name '*.go' -not -path './gen/*'))
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt needed: $unformatted"
+            exit 1
+          fi
+
+      - run: go build ./...
+      - run: go vet ./...
+      # Plain `go test` on purpose: the grpcx tests spin real listeners with dial
+      # retries, so -race is a follow-up once this has been green for a while.
+      - run: go test ./...
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      - name: Lint every values file
+        run: |
+          helm lint deploy/tracey-shop
+          helm lint deploy/tracey-shop -f deploy/tracey-shop/values-kind.yaml
+          helm lint deploy/tracey-shop -f deploy/tracey-shop/values-cloud.yaml
+
+      - name: Render every values file
+        run: |
+          helm template tracey-shop deploy/tracey-shop -n tracey-shop >/dev/null
+          helm template tracey-shop deploy/tracey-shop -n tracey-shop \
+            -f deploy/tracey-shop/values-kind.yaml >/dev/null
+          helm template tracey-shop deploy/tracey-shop -n tracey-shop \
+            -f deploy/tracey-shop/values-cloud.yaml >/dev/null
+
+      # The whole point of this repo being public: the defaults must work against
+      # a stock Causely install, with no edits.
+      - name: Defaults target a stock Causely install
+        run: |
+          out=$(helm template tracey-shop deploy/tracey-shop -n tracey-shop)
+          grep -q 'endpoint: mediator\.causely:4317' <<<"$out" \
+            || { echo "::error::default mediator endpoint is not mediator.causely:4317"; exit 1; }
+          grep -qE '^  namespace: causely$' <<<"$out" \
+            || { echo "::error::Causely integration objects are not landing in the causely namespace"; exit 1; }
+          grep -q 'image: "ghcr.io/causely-oss/tracey-shop:' <<<"$out" \
+            || { echo "::error::default image is not the published GHCR image"; exit 1; }
+
+      - name: Chart packages cleanly
+        run: helm package deploy/tracey-shop -d "$RUNNER_TEMP"
+
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # This repo was extracted from a single author's environment. These are the
+      # values that were hard-coded in it; none of them should ever come back.
+      # The usual way they do is someone pasting a working `--set` line out of
+      # their terminal into the README.
+      - name: No environment-specific or internal references
+        run: |
+          # A real ECR URI carries a 12-digit account id; the docs' placeholder
+          # form (<account>.dkr.ecr.<region>...) is fine and must not trip this.
+          pattern='causely-staging|causely-chaos|causely-mesh|[0-9]{12}\.dkr\.ecr\.|\bm8g\.|\bm8a\.|quantummetric|Quantum Metric|causely/tracey-the-demo|alloy\.monitoring|tempo\.monitoring'
+          if grep -rInE "$pattern" . \
+               --exclude-dir=.git \
+               --exclude=narrative_test.go \
+               --exclude=ci.yaml; then
+            echo "::error::environment-specific or internal reference found (see matches above)"
+            exit 1
+          fi

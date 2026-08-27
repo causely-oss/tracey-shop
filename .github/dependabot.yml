@@ -1,0 +1,16 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule: { interval: weekly }
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+
+  # The Dockerfile's base images only. The images pinned inside
+  # deploy/tracey-shop/values.yaml (the collector, kafka-exporter, postgres,
+  # valkey, kafka, kubectl) are not visible to dependabot and stay manual.
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly }
