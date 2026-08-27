@@ -6,9 +6,8 @@
 Credentials for Causely's PostgreSQL scraper.
 
 This Secret lives in the MEDIATOR's namespace, not the application's, because
-that is where the scraper looks. Note that on a split Causely install the
-mediator is not in `causely` — see docs/causely-setup.md. Run `make mediators`
-to find it.
+that is where the scraper looks. Defaults to `causely`; run `make mediators` if
+your cluster differs.
 
 The `causely.ai/scraper` label is what makes Causely pick this up
 automatically. That matters for this demo: it means the integration comes up

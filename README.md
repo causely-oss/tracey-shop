@@ -25,7 +25,7 @@ The container image is published, so there is nothing to build.
 # 1. A cluster. Skip if you already have one.
 ./scripts/kind-up.sh
 
-# 2. Find your Causely mediator. Do not assume mediator.causely:4317 — see below.
+# 2. Confirm your Causely mediator endpoint. Usually mediator.causely:4317.
 make mediators
 
 # 3. Install. The image is pulled from ghcr.io/causely-oss/tracey-shop.
@@ -212,10 +212,9 @@ application pods ──OTLP gRPC──▶ tracey-shop-otel-collector:4317
 > is the single most common reason a demo app is invisible in Causely. The app also sets those
 > attributes from the downward API as a fallback.
 
-**Find the mediator endpoint rather than assuming it.** `mediator.causely:4317` is the chart default
-and is right for a standard install. On an install where the control plane and mediators are split,
-the mediator lives in a per-environment namespace and the default does not resolve — and it fails
-silently: pods stay healthy and only the collector's exporter logs complain.
+**Confirm the mediator endpoint.** `mediator.causely:4317` is the chart default and is where a
+standard install puts it. A wrong endpoint fails silently — the pods stay healthy and only the
+collector's exporter logs complain — so it is worth ten seconds:
 
 ```bash
 make mediators      # lists every mediator.<namespace>:4317 in the current cluster

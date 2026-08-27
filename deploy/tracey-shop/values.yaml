@@ -207,9 +207,9 @@ causelyIntegrations:
     # its own namespace, so the chart creates the Secret (plus a Role and
     # RoleBinding) there rather than in the release namespace.
     #
-    # `causely` is right for a standard install. On a SPLIT install the mediator
-    # lives in a per-environment namespace and `causely` holds only the backend;
-    # run `make mediators` to discover yours.
+    # `causely` is where a standard install puts the mediator. If yours differs,
+    # run `make mediators` and set this to match — the scraper will not find its
+    # credentials anywhere else.
     mediatorNamespace: causely
 
     secretName: tracey-shop-postgres-credentials

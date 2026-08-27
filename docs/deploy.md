@@ -5,25 +5,27 @@ pulled from a registry rather than side-loaded, and the mediator endpoint is a r
 
 The image is published, so there is **no build step** in the normal path.
 
-## The one thing that will bite you first
+## Check the mediator endpoint first
 
-The chart defaults to **`mediator.causely:4317`**, which is correct for a standard Causely install.
+The chart assumes the Causely mediator runs in the **`causely`** namespace and exports to
+`mediator.causely:4317`. That is where a standard install puts it.
 
-**On an install where the Causely control plane and the mediators are split, the mediator is not in
-the `causely` namespace.** That namespace then holds only the backend — `analysis`, `api`,
-`background`, `gateway`, `ui` — and contains no `mediator` Service at all. Each monitored
-environment gets its own mediator in its own namespace, so you will see one
-`mediator.<environment>:4317` per environment and the default will not resolve.
-
-This fails in the worst way available: the application pods are healthy, the collector accepts
-spans, nothing restarts, and only the collector's own exporter logs show the failure. The demo
-simply never appears in Causely.
-
-So discover it rather than assuming:
+Confirm it rather than assuming, because getting this wrong fails silently — the pods stay healthy,
+the collector accepts spans, nothing restarts, and only the collector's own exporter logs show the
+problem. The demo just never appears in Causely.
 
 ```bash
 make mediators      # lists every mediator.<namespace>:4317 in the current cluster
 ```
+
+If it reports something other than `mediator.causely:4317`, pass it through:
+
+```bash
+make deploy-cloud MEDIATOR=mediator.<namespace>:4317
+```
+
+and set `causelyIntegrations.postgres.mediatorNamespace` to the same namespace, since the PostgreSQL
+scraper reads its credentials from wherever the mediator runs.
 
 The protocol is **OTLP gRPC on 4317**, plaintext. Not HTTP, and not `54318` — that port is the
 mediator's own self-telemetry receiver.

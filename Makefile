@@ -12,9 +12,9 @@ VALUES       ?= $(CHART)/values-kind.yaml
 
 # Mediator endpoint the collector exports to.
 #
-# `mediator.causely:4317` is right for a standard Causely install. On a SPLIT
-# install the mediator lives in a per-environment namespace instead and this will
-# not resolve — and the failure is silent, so discover yours first:
+# `mediator.causely:4317` is where a standard Causely install puts the mediator.
+# A wrong endpoint fails silently — the pods stay healthy and only the collector's
+# exporter logs complain — so confirm yours first:
 #
 #   make mediators
 MEDIATOR          ?= mediator.causely:4317

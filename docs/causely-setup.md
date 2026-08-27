@@ -19,19 +19,11 @@ otelCollector:
 
 Both traces and OTLP metrics are accepted on the same gRPC port.
 
-### The namespace is not always `causely`
+### Confirm the namespace
 
-**On an install where the Causely control plane and the mediators are split, the mediator lives in a
-per-environment namespace.** The `causely` namespace then holds only the backend — `analysis`, `api`,
-`background`, `gateway`, `ui` — and contains no `mediator` Service at all.
-
-On such an install you will see one `mediator.<environment>:4317` per monitored environment, and
-`mediator.causely:4317` — the chart default, and what Causely's docs show for a single-tenant
-install — does not resolve at all.
-
-This fails silently in the worst way: the application pods are healthy, the collector accepts spans,
-and only the collector's exporter logs show the failure. Always discover the endpoint rather than
-assuming it:
+`causely` is where a standard install puts the mediator, and the chart assumes it. If your cluster
+differs, the failure is silent in the worst way: the application pods are healthy, the collector
+accepts spans, and only the collector's exporter logs show it. So check rather than assume:
 
 ```bash
 make mediators
