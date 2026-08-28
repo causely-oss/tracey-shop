@@ -17,6 +17,32 @@ make redeploy        # rebuild, reload, upgrade, restart — the inner loop
 `make test` is fast and catches most mistakes. Please run it before opening a PR; CI runs the same
 thing plus `helm template` against all three values files.
 
+### The Kafka integration test
+
+`internal/transport/kafkax/lag_integration_test.go` exercises the real produce -> consumer-group ->
+`LagMonitor` path, which the unit tests cannot: they never touch a broker, so a sarama upgrade can
+pass CI and still leave the `fraud-lag` scenario silent. It skips unless `KAFKA_ITEST_BROKERS` is
+set. Run it against any broker, e.g. a throwaway one:
+
+```bash
+docker run -d --name kafka-itest -p 19092:9092 \
+  -e KAFKA_NODE_ID=1 -e KAFKA_PROCESS_ROLES=broker,controller \
+  -e KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093 \
+  -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:19092 \
+  -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
+  -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+  -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
+  -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
+  -e KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0 -e KAFKA_NUM_PARTITIONS=3 \
+  -e CLUSTER_ID=4L6g3nShT-eMCtK--X86sw \
+  apache/kafka:3.9.1
+
+KAFKA_ITEST_BROKERS=localhost:19092 go test ./internal/transport/kafkax/ -v -count=1
+docker rm -f kafka-itest
+```
+
+Please run it when you touch `internal/transport/kafkax/` or bump `github.com/IBM/sarama`.
+
 ### Regenerating the gRPC stubs
 
 `gen/` is checked in on purpose, so building the demo needs no protoc. If you change
