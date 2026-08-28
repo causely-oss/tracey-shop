@@ -63,7 +63,7 @@ help: ## Show this help
 
 .PHONY: proto-tools
 proto-tools: ## Install the protoc plugins `make proto` needs
-	go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
+	go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
 
 .PHONY: proto
