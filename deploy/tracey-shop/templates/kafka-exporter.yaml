@@ -74,6 +74,35 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        # kafka-exporter Fatal()s on the first failed metadata fetch. App pods
+        # use waitForBroker for the same race: a cold install or a broker
+        # restart otherwise leaves RESTARTS: 1, which Causely cannot tell from
+        # a real crash and which breaks the clean demo baseline.
+        - name: wait-for-kafka
+          image: {{ $int.waitImage | default "busybox:1.37.0" }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              broker={{ (splitList "," $brokers) | first | quote }}
+              host="${broker%:*}"
+              port="${broker##*:}"
+              deadline=$(( $(date +%s) + 300 ))
+              until nc -z -w 2 "$host" "$port"; do
+                if [ "$(date +%s)" -ge "$deadline" ]; then
+                  echo "timed out waiting for kafka at $broker" >&2
+                  exit 1
+                fi
+                echo "waiting for kafka at $broker ..."
+                sleep 3
+              done
+              echo "kafka is reachable at $broker"
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 50m, memory: 32Mi }
       containers:
         - name: kafka-exporter
           image: {{ $int.image }}
