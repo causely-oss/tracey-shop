@@ -32,13 +32,13 @@ make mediators
 helm upgrade --install tracey-shop deploy/tracey-shop \
   -n tracey-shop --create-namespace \
   -f deploy/tracey-shop/values-kind.yaml \
-  --set otelCollector.exporter.endpoint=mediator.causely:4317 \
-  --wait --timeout 15m
+  --wait --timeout 15m \
+  --set otelCollector.exporter.endpoint=mediator.causely:4317  # update based on step 2
 
 # 4. Watch it settle. Every pod should reach Running with zero restarts.
 make status
 
-# 5. Confirm the traces carry what Causely needs.
+# 5. Confirm the traces carry what Causely needs. This will take a couple of minutes.
 ./scripts/verify-traces.sh --upgrade
 ```
 
