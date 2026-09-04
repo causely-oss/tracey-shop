@@ -14,7 +14,7 @@
 #       -> required before Causely treats a span as an RPC call at all. Spelled
 #          rpc.system before otelgrpc v0.70 / semconv 1.43; the mediator reads
 #          both, and this demo emits only the current one.
-#   db.system + db.query.text
+#   db.system (or db.system.name) + db.query.text
 #       -> how Postgres/Valkey become database dependencies, and how slow
 #          queries are attributed.
 #   messaging.destination.name + messaging.consumer.group.name
@@ -73,10 +73,17 @@ kubectl -n "$NAMESPACE" get "deployment/$COLLECTOR" >/dev/null 2>&1 \
 # Ensure the collector is logging full spans
 # ---------------------------------------------------------------------------
 
+# The indentation here is deliberately loose. The previous pattern was
+# `/^      debug:/`, copied from the template file — where the block sits inside
+# `data: {config.yaml: |}` and so carries the ConfigMap's own nesting. Reading
+# `.data.config\.yaml` strips that nesting, so the rendered text is `  debug:`
+# and the pattern never matched: this always returned empty, the script always
+# reported verbosity 'unknown', and it refused to run without --upgrade even
+# when detailed was already set.
 current_verbosity() {
   kubectl -n "$NAMESPACE" get configmap "$COLLECTOR" \
     -o jsonpath='{.data.config\.yaml}' 2>/dev/null \
-    | awk '/^      debug:/{found=1; next} found && /verbosity:/{print $2; exit}'
+    | awk '/^[[:space:]]*debug:[[:space:]]*$/{found=1; next} found && /verbosity:/{print $2; exit}'
 }
 
 VERBOSITY="$(current_verbosity || true)"
@@ -281,15 +288,24 @@ fi
 echo
 log "6. Database dependencies"
 
-if has 'db.system: Str(postgresql)'; then
-  ok "Postgres dependency detected (db.system=postgresql)"
+# Accept either spelling. semconv 1.43 renamed db.system to db.system.name, and
+# the two libraries this demo uses are on different vintages: otelpgx emits
+# db.system.name, while redisotel still emits db.system. The mediator reads both
+# (DBSystemNameKey, then "db.system"), so either is fine — but pinning one
+# spelling here made a healthy Postgres look like a missing dependency.
+db_system() {
+  grep -qE "^[[:space:]]*-> db\.system(\.name)?: Str\($1\)" "$LOGFILE"
+}
+
+if db_system postgresql; then
+  ok "Postgres dependency detected (db.system[.name]=postgresql)"
 else
-  bad "no Postgres spans (db.system=postgresql missing)"
+  bad "no Postgres spans (db.system[.name]=postgresql missing)"
 fi
-if has 'db.system: Str(redis)'; then
-  ok "Valkey dependency detected (db.system=redis)"
+if db_system redis; then
+  ok "Valkey dependency detected (db.system[.name]=redis)"
 else
-  bad "no Valkey spans (db.system=redis missing)"
+  bad "no Valkey spans (db.system[.name]=redis missing)"
 fi
 if has 'db.query.text'; then
   ok "db.query.text present — slow queries will be attributable"

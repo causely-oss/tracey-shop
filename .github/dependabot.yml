@@ -3,6 +3,22 @@ updates:
   - package-ecosystem: gomod
     directory: /
     schedule: { interval: weekly }
+    # Group the OpenTelemetry modules so they move together.
+    #
+    # Ungrouped, they arrive as one PR per module and each looks independent.
+    # That hid a real change: a bump of the OTLP exporter alone also dragged
+    # otelgrpc from v0.62 to v0.70, which switched the whole RPC attribute set to
+    # the semconv 1.43 conventions — rpc.system -> rpc.system.name, rpc.service
+    # dropped, rpc.method fully qualified, rpc.grpc.status_code ->
+    # rpc.response.status_code. Every one of those is load-bearing for Causely's
+    # topology, and none of it was visible from the PR title.
+    #
+    # Grouping also removes the mixed-version states you get while merging such
+    # PRs one at a time.
+    groups:
+      opentelemetry:
+        patterns:
+          - "go.opentelemetry.io/*"
 
   - package-ecosystem: github-actions
     directory: /
