@@ -9,8 +9,8 @@ type: application
 home: https://github.com/causely-oss/tracey-shop
 sources:
   - https://github.com/causely-oss/tracey-shop
-version: 0.1.1
-appVersion: "0.1.1"
+version: 0.1.2
+appVersion: "0.1.2"
 keywords:
   - causely
   - demo
