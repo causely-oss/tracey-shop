@@ -18,9 +18,15 @@ type chartValues struct {
 		Port     int    `yaml:"port"`
 	} `yaml:"services"`
 	Loadgen struct {
-		Enabled bool   `yaml:"enabled"`
-		Name    string `yaml:"name"`
+		Enabled   bool    `yaml:"enabled"`
+		Name      string  `yaml:"name"`
+		AssistRPS float64 `yaml:"assistRPS"`
 	} `yaml:"loadgen"`
+	GenAI struct {
+		Enabled  bool   `yaml:"enabled"`
+		API      string `yaml:"api"`
+		External string `yaml:"external"`
+	} `yaml:"genai"`
 }
 
 // TestTrafficSourceIsNotNamedLoadgen guards the deliberate split between the
@@ -48,7 +54,21 @@ func TestTrafficSourceIsNotNamedLoadgen(t *testing.T) {
 	}
 }
 
+// loadChartValues parses a values file that is expected to declare the full
+// topology. Use parseChartValues for an overlay that only scales things.
 func loadChartValues(t *testing.T, name string) chartValues {
+	t.Helper()
+	v := parseChartValues(t, name)
+	if len(v.Services) == 0 {
+		t.Fatalf("%s declares no services", name)
+	}
+	return v
+}
+
+// parseChartValues parses a values file without requiring a services block, so
+// overlays like values-cloud.yaml — which only override loadgen and resources —
+// can still be asserted against.
+func parseChartValues(t *testing.T, name string) chartValues {
 	t.Helper()
 	path := filepath.Join("..", "..", "deploy", "tracey-shop", name)
 	raw, err := os.ReadFile(path)
@@ -58,9 +78,6 @@ func loadChartValues(t *testing.T, name string) chartValues {
 	var v chartValues
 	if err := yaml.Unmarshal(raw, &v); err != nil {
 		t.Fatalf("parse %s: %v", path, err)
-	}
-	if len(v.Services) == 0 {
-		t.Fatalf("%s declares no services", path)
 	}
 	return v
 }
@@ -177,5 +194,48 @@ func TestValuesFilesAgreeOnTopology(t *testing.T) {
 		if _, ok := base.Services[name]; !ok {
 			t.Errorf("values-kind.yaml declares service %q that values.yaml does not", name)
 		}
+	}
+}
+
+// TestGenAIShipsOnAndAboveTheActivationGate guards the two values that decide
+// whether the genAI half of the demo does anything on a fresh install.
+//
+// Every genAI symptom in Causely (Inference Latency, Inference Error Rate, Rate
+// Limited) carries `@activation(condition=InferenceTotalRate > 0.1)`. At or
+// below 0.1 rps the AIModel entity and its token metrics still show up, so the
+// install looks correct — but no symptom can ever fire, and the
+// ai-model-malfunction scenario silently produces nothing. That failure is
+// invisible from the outside, which is why it is asserted here rather than left
+// to a comment.
+//
+// Checked in every values file that ships, because the kind overlay scales
+// traffic down and is the one most likely to drop below the gate.
+func TestGenAIShipsOnAndAboveTheActivationGate(t *testing.T) {
+	// Causely's InferenceTotalRate activation condition.
+	const activationGate = 0.1
+
+	for _, file := range []string{"values.yaml", "values-kind.yaml", "values-cloud.yaml"} {
+		t.Run(file, func(t *testing.T) {
+			values := parseChartValues(t, file)
+
+			// Only values.yaml declares the genai block; the overlays inherit it.
+			if file == "values.yaml" {
+				if !values.GenAI.Enabled {
+					t.Error("genai.enabled is false; the AI entities would never appear in Causely")
+				}
+				if values.GenAI.External != "" {
+					t.Errorf("genai.external is %q; the shipped default must be the bundled "+
+						"model-gateway so `helm install` needs no API key and no egress",
+						values.GenAI.External)
+				}
+			}
+
+			if values.Loadgen.AssistRPS <= activationGate {
+				t.Errorf("loadgen.assistRPS is %v, at or below Causely's "+
+					"InferenceTotalRate > %v activation gate — the AI entities would appear "+
+					"but no genAI symptom could ever fire",
+					values.Loadgen.AssistRPS, activationGate)
+			}
+		})
 	}
 }

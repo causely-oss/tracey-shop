@@ -42,6 +42,14 @@
   <span>Tracey Shop — a Causely demo application</span>
 </footer>
 
+<!--
+  Feature flags, substituted into the shell by web.go at serve time.
+  Deliberately not fetched from an endpoint: a /api/features call on every page
+  load would create an HTTPPath entity in Causely and add traffic to
+  storefront-bff's error-rate and latency baseline, which every scenario depends
+  on staying clean. Same reasoning as serving the assets outside otelhttp.
+-->
+<script>window.SHOP_FEATURES = { assist: __ASSIST_ENABLED__ };</script>
 <script src="/app.js"></script>
 </body>
 </html>

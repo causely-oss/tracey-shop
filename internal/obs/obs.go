@@ -29,7 +29,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/causely-oss/tracey-shop/internal/config"
@@ -91,7 +91,7 @@ func buildResource(ctx context.Context, cfg *config.Config) (*resource.Resource,
 		semconv.ServiceName(cfg.ServiceName),
 		semconv.ServiceNamespace(cfg.Namespace),
 		semconv.ServiceVersion(cfg.Version),
-		semconv.DeploymentEnvironmentName(cfg.Env),
+		semconv.DeploymentEnvironmentNameKey.String(cfg.Env),
 	}
 
 	// Downward-API values. These are what Causely's findWorkloadEntity uses to
@@ -113,6 +113,22 @@ func buildResource(ctx context.Context, cfg *config.Config) (*resource.Resource,
 		attrs = append(attrs, semconv.K8SContainerName(v))
 	}
 
+	// The semconv version here MUST match the one the SDK's own resource
+	// detectors use (go.opentelemetry.io/otel/sdk/resource imports
+	// semconv/v1.43.0 as of sdk v1.45.0). resource.New merges our attributes
+	// with the detectors' and REFUSES to merge two different schema URLs:
+	//
+	//   error detecting resource: conflicting Schema URL:
+	//     https://opentelemetry.io/schemas/1.34.0 and .../1.43.0
+	//
+	// That error is fatal in main(), so every pod CrashLoops — which is exactly
+	// what an otel bump did to this repo. TestSetupBuildsAResource guards it.
+	//
+	// Only this file needs to move in step. The transport packages pin
+	// semconv/v1.34.0 for SPAN attributes, which is unrelated: the resource
+	// schema URL describes the resource, not the spans. internal/genai depends
+	// on that pin specifically, because the experimental gen_ai group was
+	// dropped from the v1.43.0 package.
 	return resource.New(ctx,
 		resource.WithSchemaURL(semconv.SchemaURL),
 		resource.WithProcessRuntimeName(),

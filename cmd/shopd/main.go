@@ -23,12 +23,14 @@ import (
 	"github.com/causely-oss/tracey-shop/internal/config"
 	"github.com/causely-oss/tracey-shop/internal/faults"
 	"github.com/causely-oss/tracey-shop/internal/obs"
+	"github.com/causely-oss/tracey-shop/internal/services/aiassistant"
 	"github.com/causely-oss/tracey-shop/internal/services/cart"
 	"github.com/causely-oss/tracey-shop/internal/services/catalog"
 	"github.com/causely-oss/tracey-shop/internal/services/checkout"
 	"github.com/causely-oss/tracey-shop/internal/services/fraud"
 	"github.com/causely-oss/tracey-shop/internal/services/inventory"
 	"github.com/causely-oss/tracey-shop/internal/services/ledger"
+	"github.com/causely-oss/tracey-shop/internal/services/llmsim"
 	"github.com/causely-oss/tracey-shop/internal/services/loadgen"
 	"github.com/causely-oss/tracey-shop/internal/services/notification"
 	"github.com/causely-oss/tracey-shop/internal/services/partnersim"
@@ -54,6 +56,8 @@ var roles = map[string]app.RunFunc{
 	"risk-model":          risk.Run,
 	"notification-worker": notification.Run,
 	"partner-sim":         partnersim.Run,
+	"ai-assistant":        aiassistant.Run,
+	"llm-sim":             llmsim.Run,
 	"loadgen":             loadgen.Run,
 }
 

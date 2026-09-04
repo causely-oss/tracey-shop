@@ -201,13 +201,39 @@ func Run(ctx context.Context, d *app.Deps) error {
 		}, nil
 	})
 
+	// The genAI surface, registered only when it is configured. Leaving the
+	// route off entirely when disabled matters for the clean baseline: a
+	// registered route that always failed would give storefront-bff a standing
+	// error rate, and every scenario in the demo depends on that baseline being
+	// error-free.
+	if d.Cfg.GenAIEnabled {
+		assistant := d.HTTPClientWithTimeout(d.Cfg.AIAssistURL, d.Cfg.GenAITimeout)
+
+		s.Route("POST /api/assist", func(ctx context.Context, r *http.Request) (any, error) {
+			var in domain.AssistRequest
+			if err := httpx.DecodeJSON(r, &in); err != nil {
+				return nil, err
+			}
+			if in.Question == "" {
+				return nil, &httpx.BadRequestError{Msg: "question is required"}
+			}
+
+			var out domain.AssistResponse
+			if err := assistant.PostJSON(ctx, "/assist", in, &out); err != nil {
+				return nil, fmt.Errorf("assist: %w", err)
+			}
+			return out, nil
+		})
+		slog.Info("genai assistant route enabled")
+	}
+
 	// The browser storefront. Served from this same listener, which keeps it
 	// same-origin with the /api routes above — no CORS anywhere. Registered
 	// last: the catch-all "/" must not shadow the specific "GET /api/..."
 	// patterns, and Go's method-aware mux gives those precedence regardless of
 	// registration order.
 	if d.Cfg.WebUIEnabled {
-		ui, err := newUIHandler()
+		ui, err := newUIHandler(d.Cfg.GenAIEnabled)
 		if err != nil {
 			return fmt.Errorf("storefront ui: %w", err)
 		}

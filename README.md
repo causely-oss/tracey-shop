@@ -72,11 +72,14 @@ browser ──┐                                                               
 web-client ┴HTTP─▶ storefront-bff :8080                                   ← layer 1 (edge)
                    (also serves the storefront UI at /)
                        │
-        ┌──────────────┼───────────────┬────────────────┐
-        │gRPC          │HTTP           │gRPC            │                 ← layer 2
-        ▼              ▼               ▼                │
-   catalog-api    cart-service    checkout-api ─────────┘
-     :9001           :8081            :9002
+        ┌──────────────┼───────────────┬────────────────┬──────────────┐
+        │gRPC          │HTTP           │gRPC            │              │HTTP
+        ▼              ▼               ▼                │              ▼
+   catalog-api    cart-service    checkout-api ─────────┘        ai-assistant :8088
+     :9001           :8081            :9002                             │HTTP  ← layer 2
+                                                                        ▼
+                                                              model-gateway :8089
+                                                                (gen_ai.* CLIENT span)
         │ │             │              │ │ │ │
    gRPC │ │Redis   Redis│         gRPC │ │ │ └──HTTP──▶ shipping-quote :8082 ← layer 3
         ▼ └──▶(valkey)  └──▶(valkey)   │ │ │                  │HTTP
@@ -118,6 +121,13 @@ Deepest asynchronous chain:
 same `partner-sim` implementation under three different service names, so the graph has
 realistic leaf dependencies with no internet access required.
 
+`ai-assistant` is the genAI branch: it answers product questions by calling an LLM and emits
+GenAI OpenTelemetry spans, which Causely turns into `AIModel` and `AIModelAccess` entities with
+their own latency, error-rate and rate-limit symptoms. `model-gateway` is the bundled provider —
+an OpenAI-compatible endpoint, so the default install needs no API key, no egress and costs
+nothing. Point it at a real provider with one values change. Traffic is **off by default**; see
+[docs/genai.md](docs/genai.md).
+
 See [docs/topology.md](docs/topology.md) for the per-service protocol and dependency table.
 
 ## Controlling load
@@ -129,6 +139,14 @@ graph. Change the rate live — no `helm upgrade`, no restart:
 ./scripts/load.sh          # show current rate
 ./scripts/load.sh 80       # 80 rps
 ./scripts/load.sh 0        # pause
+```
+
+GenAI traffic is paced separately, in **absolute** requests per second, so raising shop load
+never multiplies spend against a real LLM provider. It starts at 0:
+
+```bash
+./scripts/genai.sh 0.5     # ~1 inference every 2s
+./scripts/genai.sh 0       # off
 ```
 
 Or set the defaults at install time:
@@ -170,6 +188,7 @@ prerequisite for a credible demo, since Causely should find nothing until you br
 | `ledger-pool-exhaustion` | ledger-svc leaks connections | ledger-svc, connection-pool exhaustion |
 | `risk-crash` | risk-model panics on 2% | risk-model, CrashLoopBackOff |
 | `checkout-latency` | checkout-api's own latency | control case: cause and symptom are the same service |
+| `ai-model-malfunction` | LLM provider fails 50% of inferences | **AIModel Malfunction** on `mock-small-1/chat` — the failing entity is a model, not a service |
 
 Each scenario also emits a **matching WARN/ERROR log line**, because Causely builds its root-cause
 *description* from container logs, not only from metric symptoms — without one the description is
@@ -298,7 +317,8 @@ A dropped span is invisible from both sides, so run this first when something is
 
 One Go module, one image, one Dockerfile. The `ROLE` environment variable selects which service
 the container runs; Helm renders each role as its own Deployment and Service, so Causely still
-sees fifteen genuinely distinct services with distinct `service.name` values.
+sees seventeen genuinely distinct application services — plus the load generator's own
+`web-client` — each with its own `service.name`.
 
 ```
 cmd/shopd/main.go              ROLE dispatch
@@ -306,6 +326,7 @@ internal/
   config/                      env-driven configuration
   obs/                         OTel setup, resource attributes, logging
   faults/                      fault store and injectors
+  genai/                       LLM provider client + GenAI semconv spans
   admin/                       health probes + fault API (never traced)
   transport/
     httpx/ grpcx/              instrumented servers and clients
@@ -316,7 +337,7 @@ internal/
   services/<role>/             one package per service
 proto/shop/v1/shop.proto       gRPC contracts (generated code checked in)
 deploy/tracey-shop/            Helm chart
-scripts/                       kind-up, scenario, load, verify-traces
+scripts/                       kind-up, scenario, load, genai, verify-traces
 ```
 
 Adding a service is one values block plus one package registered in `cmd/shopd/main.go`.

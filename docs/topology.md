@@ -6,7 +6,7 @@
 |---|---|---|---|
 | `browser` (a real user) | 0 | — | HTTP → storefront-bff |
 | `web-client` | 0 | — | HTTP → storefront-bff |
-| `storefront-bff` | 1 | HTTP :8080 | gRPC → catalog-api, checkout-api; HTTP → cart-service. Also serves the embedded browser storefront at `/` — untraced |
+| `storefront-bff` | 1 | HTTP :8080 | gRPC → catalog-api, checkout-api; HTTP → cart-service, ai-assistant (only when `genai.enabled`). Also serves the embedded browser storefront at `/` — untraced |
 | `catalog-api` | 2 | gRPC :9001 | gRPC → inventory-svc; Valkey |
 | `cart-service` | 2 | HTTP :8081 | Valkey |
 | `checkout-api` | 2 | gRPC :9002 | HTTP → cart-service, shipping-quote; gRPC → pricing-engine, inventory-svc, payment-gw; Postgres; Kafka → `orders` |
@@ -18,6 +18,8 @@
 | `fraud-detector` | 4 | Kafka ← `orders` | gRPC → risk-model; Kafka → `notifications` |
 | `risk-model` | 5 | gRPC :9007 | Valkey |
 | `notification-worker` | 5 | Kafka ← `notifications` | HTTP → email-sim |
+| `ai-assistant` | 2 | HTTP :8088 | HTTP → model-gateway (or an external LLM provider) — emits the `gen_ai.*` CLIENT span |
+| `model-gateway` | leaf | HTTP :8089 | — (the bundled OpenAI-compatible provider; role `llm-sim`) |
 | `stripe-sim` | leaf | HTTP :8086 | — |
 | `carrier-sim` | leaf | HTTP :8085 | — |
 | `email-sim` | leaf | HTTP :8087 | — |
@@ -30,7 +32,7 @@ for them. Their health cannot be inferred from a caller's error rate, which is w
 
 | Protocol | Where |
 |---|---|
-| HTTP | edge, cart-service, shipping-quote, all three partner sims, web-client |
+| HTTP | edge, cart-service, shipping-quote, all three partner sims, ai-assistant, model-gateway, web-client |
 | gRPC | catalog, checkout, pricing, inventory, payment, ledger, risk (7 services) |
 | Postgres | inventory-svc, pricing-engine, checkout-api, ledger-svc |
 | Valkey (Redis) | catalog-api cache, cart-service store, pricing-engine rule cache, risk-model feature store |
@@ -69,6 +71,18 @@ fraud-detector consumes orders
           → email-sim (HTTP)
 ```
 
+**Assist** (`POST /api/assist`) — the genAI path, off by default:
+
+```
+web-client / browser → storefront-bff → ai-assistant → "chat <model>" (CLIENT, gen_ai.*)
+                                                          → model-gateway, or a real provider
+```
+
+The inference span is a **direct child** of `ai-assistant`'s SERVER span, which is what supplies
+the `AIModelAccess` source Operation on Causely's side. An INTERNAL span in between would be
+dropped by the collector and would orphan the parent chain, leaving the `AIModel` with no access
+edge at all. See [genai.md](genai.md) for the full ingest contract.
+
 ## Database schema
 
 Applied idempotently at startup by every Postgres-using service, serialised with a
@@ -91,7 +105,7 @@ baseline never produces a 404.
 
 | Port | Purpose |
 |---|---|
-| 8080–8087 | HTTP business ports |
+| 8080–8089 | HTTP business ports |
 | 9001–9007 | gRPC business ports |
 | **8090** | admin: `/healthz`, `/readyz`, `/admin/faults` — **never trace-instrumented** |
 | 4317 / 4318 | collector OTLP receiver |

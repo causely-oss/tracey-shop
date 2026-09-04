@@ -68,6 +68,24 @@ can be swapped for a real one.
 {{- end -}}
 {{- end -}}
 
+{{/*
+The base URL the assistant sends inferences to. Empty genai.external means the
+bundled model-gateway, following the same convention as backends.*.external.
+
+The hostname in this URL becomes server.address on the genAI span, and Causely
+resolves it to the Service the AIModel is layered over — so an in-cluster name
+puts the model over a real workload, while an external hostname gets a
+synthesized provider Service named after the endpoint.
+*/}}
+{{- define "tracey-shop.genaiBaseURL" -}}
+{{- $genai := .Values.genai | default dict -}}
+{{- if $genai.external -}}
+{{- $genai.external | trimSuffix "/" -}}
+{{- else -}}
+{{- printf "http://%s-model-gateway:%d" (include "tracey-shop.fullname" .) (int (index .Values.services "model-gateway").port) -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "tracey-shop.kafkaBrokers" -}}
 {{- if .Values.backends.kafka.external -}}
 {{- .Values.backends.kafka.external -}}
@@ -139,6 +157,57 @@ same flat-env convention as everything above.
 */}}
 - name: WEB_UI_ENABLED
   value: {{ $root.Values.storefrontWeb.enabled | quote }}
+{{/*
+GenAI. GENAI_SYSTEM and GENAI_MODEL are left empty here when the operator left
+them empty, and internal/config derives provider-appropriate defaults — which
+keeps the "which model is cheap for this provider" knowledge in one place
+instead of duplicated into the chart.
+
+GENAI_API_KEY is deliberately NOT here: it is the one real credential in this
+chart, and templates/services.yaml injects it into ai-assistant alone rather
+than into all eighteen pods.
+*/}}
+{{/*
+Every value below is passed through empty when unset and defaulted in
+internal/config, rather than being defaulted here — so the "cheap model for this
+provider" knowledge lives in exactly one place.
+
+The `default dict` guard is not decorative. `helm upgrade --reuse-values` does
+NOT layer in a new chart's defaults, so upgrading a release created before the
+genAI block existed leaves .Values.genai nil — and docs/scenarios.md tells people
+to use --reuse-values. Without the guard that upgrade dies on a nil pointer;
+with it, genAI simply stays off.
+*/}}
+{{- $genai := $root.Values.genai | default dict }}
+{{- $gateway := $genai.gateway | default dict }}
+- name: GENAI_ENABLED
+  value: {{ $genai.enabled | default false | quote }}
+- name: GENAI_API
+  value: {{ $genai.api | default "" | quote }}
+- name: GENAI_BASE_URL
+  value: {{ include "tracey-shop.genaiBaseURL" $root | quote }}
+{{/*
+Stated explicitly because GENAI_BASE_URL is always set and so cannot reveal it.
+It selects the default model name, which becomes half the AIModel entity name in
+Causely — so without this the demo would report gpt-4o-mini while answering from
+the bundled mock.
+*/}}
+- name: GENAI_BUNDLED
+  value: {{ not $genai.external | quote }}
+- name: GENAI_MODEL
+  value: {{ $genai.model | default "" | quote }}
+- name: GENAI_SYSTEM
+  value: {{ $genai.system | default "" | quote }}
+- name: GENAI_MAX_TOKENS
+  value: {{ $genai.maxTokens | default "" | quote }}
+- name: GENAI_TEMPERATURE
+  value: {{ $genai.temperature | default "" | quote }}
+- name: GENAI_TIMEOUT
+  value: {{ $genai.timeout | default "" | quote }}
+- name: GENAI_GATEWAY_LATENCY
+  value: {{ $gateway.latency | default "" | quote }}
+- name: GENAI_GATEWAY_OUTPUT_TOKENS
+  value: {{ $gateway.outputTokens | default "" | quote }}
 - name: ADMIN_ADDR
   value: {{ printf ":%d" (int $root.Values.adminPort) | quote }}
 - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -190,4 +259,6 @@ one namespace makes every dependency edge resolvable.
   value: {{ printf "http://%s-carrier-sim:%d" $fullname (int (index $svcs "carrier-sim").port) | quote }}
 - name: EMAIL_URL
   value: {{ printf "http://%s-email-sim:%d" $fullname (int (index $svcs "email-sim").port) | quote }}
+- name: AI_ASSIST_URL
+  value: {{ printf "http://%s-ai-assistant:%d" $fullname (int (index $svcs "ai-assistant").port) | quote }}
 {{- end -}}

@@ -65,6 +65,10 @@ spec:
               value: {{ .Values.loadgen.mix.addToCart | quote }}
             - name: LOAD_MIX_CHECKOUT
               value: {{ .Values.loadgen.mix.checkout | quote }}
+            # Absolute, and independent of LOAD_RPS above, so raising shop load
+            # cannot multiply spend against a real LLM provider. 0 means off.
+            - name: LOAD_ASSIST_RPS
+              value: {{ default 0 .Values.loadgen.assistRPS | quote }}
             {{- include "tracey-shop.commonEnv" (dict "root" .) | nindent 12 }}
           ports:
             - name: admin

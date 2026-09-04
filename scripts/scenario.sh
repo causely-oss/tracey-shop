@@ -22,11 +22,17 @@ ADMIN_PORT="${ADMIN_PORT:-8090}"
 LOCAL_PORT="${LOCAL_PORT:-18090}"
 
 # Every service that carries a fault store.
+# Every service holding a fault store, so `stop-all` and `status` cover all of
+# them. ai-assistant and model-gateway are here even though no scenario targets
+# them yet: model-gateway is the LLM provider and is fault-injectable by hand
+# (see docs/genai.md), and a fault left set there would otherwise survive a
+# stop-all and quietly poison the next demo.
 ALL_SERVICES=(
   storefront-bff catalog-api cart-service checkout-api
   inventory-svc pricing-engine payment-gw shipping-quote
   ledger-svc fraud-detector risk-model notification-worker
   stripe-sim carrier-sim email-sim web-client
+  ai-assistant model-gateway
 )
 
 # ---------------------------------------------------------------------------
@@ -96,6 +102,20 @@ scenario_spec() {
       # cause and the symptom are the same service.
       echo 'checkout-api={"latencyMs":400,"latencyJitterMs":200}'
       ;;
+    ai-model-malfunction)
+      # Half of all inferences fail at the LLM provider.
+      #
+      # 0.5, not a smaller number, for two reasons. Causely's
+      # InferenceErrorRate_High threshold is 10%, and the genAI trickle is only
+      # ~0.5 rps — so a 5-minute window holds ~150 inferences and a low rate
+      # would sit too close to the threshold to fire reliably. A clearly
+      # supra-threshold rate also keeps the story unambiguous on screen.
+      #
+      # The 500s land on the genAI span as http.response.status_code, which is
+      # the ONLY thing Causely counts as an inference error — the span's own
+      # status is ignored. See docs/genai.md.
+      echo 'model-gateway={"errorRate":0.5}'
+      ;;
     *)
       return 1
       ;;
@@ -114,6 +134,7 @@ SCENARIOS=(
   ledger-pool-exhaustion
   risk-crash
   checkout-latency
+  ai-model-malfunction
 )
 
 scenario_description() {
@@ -129,6 +150,7 @@ scenario_description() {
     ledger-pool-exhaustion)  echo "ledger-svc leaks DB connections        -> expect root cause: ledger-svc pool exhaustion" ;;
     risk-crash)              echo "risk-model panics on 2% of requests    -> expect root cause: risk-model (CrashLoopBackOff)" ;;
     checkout-latency)        echo "checkout-api adds its own latency      -> control case: cause == symptom" ;;
+    ai-model-malfunction)    echo "LLM provider fails 50% of inferences   -> expect root cause: AIModel Malfunction on mock-small-1/chat" ;;
   esac
 }
 
@@ -250,7 +272,10 @@ cmd_list() {
   echo "Usage: $0 start <scenario> | stop <scenario> | stop-all | status"
   echo
   echo "Note: error-rate and latency symptoms can take 10-15 minutes to fire in"
-  echo "Causely. Raise load first to shorten that: ./scripts/load.sh 100"
+  echo "Causely. Raise traffic first to shorten that:"
+  echo "  ./scripts/load.sh 100    for the shop scenarios"
+  echo "  ./scripts/genai.sh 2     for ai-model-malfunction (load.sh does not"
+  echo "                           affect the genAI rate; it is paced separately)"
 }
 
 cmd_start() {

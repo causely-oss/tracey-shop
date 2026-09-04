@@ -69,7 +69,33 @@ Everything is one Go module and one image; `ROLE` selects which service the cont
 renders each role as its own Deployment and Service. Causely still sees genuinely distinct services
 with distinct `service.name` values.
 
+Both `deploy/tracey-shop/values.yaml` and `values-kind.yaml` need the block: a test asserts the two
+agree on every service's name, protocol, port and role, and lets them differ only on replicas and
+resources.
+
 Update [docs/topology.md](docs/topology.md) in the same PR.
+
+## Adding an LLM provider
+
+`internal/genai/genai.go` holds one function per wire protocol — `chatOpenAI` and `chatAnthropic`,
+about forty lines each — selected by `genai.api`. Adding a third means a request/response pair, a
+`case` in `invoke`, and its auth headers in `New`.
+
+What must not change is the span. Every attribute set in `Chat` is there because Causely's mediator
+requires it, and **every one of those requirements fails silently** — the inference simply never
+becomes an `AIModel` entity, with nothing logged above Debug. The eight requirements are listed in
+the package comment and in [docs/genai.md](docs/genai.md), and
+`internal/genai/genai_test.go` asserts each of them.
+
+Three that are easy to break by accident:
+
+- `http.response.status_code` must be set on the **error** path too. It is the only source of
+  error and rate-limit signal — the OTLP span status is ignored — so without it a failed inference
+  is counted as a success.
+- Token counts must be **integers**. The mediator's attribute reader accepts `IntValue` only and
+  reads a float as 0.
+- There must be **exactly one CLIENT span** per inference, attached directly to the caller's SERVER
+  span. That is why the provider client asks `httpx` for `WithCallerSpan()`.
 
 ## Adding a fault scenario
 

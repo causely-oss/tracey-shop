@@ -150,12 +150,55 @@ type Client struct {
 	hc      *http.Client
 	faults  *faults.Store
 	timeout time.Duration
+	headers map[string]string
+}
+
+// ClientOption adjusts a Client at construction time.
+type ClientOption func(*clientOptions)
+
+type clientOptions struct {
+	headers map[string]string
+	ownSpan bool
+}
+
+// WithHeader sets a static header on every request this client makes.
+//
+// Provider credentials need this: Authorization, x-api-key and
+// anthropic-version are all per-provider constants, and there was previously no
+// way to attach them.
+func WithHeader(key, value string) ClientOption {
+	return func(o *clientOptions) {
+		if o.headers == nil {
+			o.headers = map[string]string{}
+		}
+		o.headers[key] = value
+	}
+}
+
+// WithCallerSpan skips the otelhttp transport, leaving span creation to the
+// caller.
+//
+// This exists for the genAI client, which must emit exactly ONE CLIENT span per
+// call carrying the gen_ai.* attributes. With otelhttp also wrapping the
+// request there would be two CLIENT spans to the same peer, and Causely would
+// additionally build a stray HTTPPath entity (/v1/chat) on the provider Service
+// from the second one — visible in the mediator's own rag-genai fixture.
+//
+// The peer attributes are still pinned, because the caller's span needs
+// server.address to resolve the destination at all.
+func WithCallerSpan() ClientOption {
+	return func(o *clientOptions) { o.ownSpan = true }
 }
 
 // NewClient builds a client for baseURL. The peer attributes are derived once
 // from the URL and pinned onto every CLIENT span.
-func NewClient(baseURL string, timeout time.Duration, store *faults.Store) *Client {
+func NewClient(baseURL string, timeout time.Duration, store *faults.Store, opts ...ClientOption) *Client {
 	host, port := hostPortFromURL(baseURL)
+
+	var o clientOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 
 	base := &http.Transport{
 		MaxIdleConns:        100,
@@ -166,13 +209,19 @@ func NewClient(baseURL string, timeout time.Duration, store *faults.Store) *Clie
 	// Order matters: otelhttp.NewTransport creates the CLIENT span and then
 	// calls the base RoundTripper, so peerPinner sees a context that already
 	// carries the span and can assert the peer attributes on it.
-	rt := otelhttp.NewTransport(&peerPinner{
+	//
+	// With WithCallerSpan the pinner is still in the chain and still asserts
+	// onto whatever recording span the caller put in the context.
+	var rt http.RoundTripper = &peerPinner{
 		next: base,
 		attrs: []attribute.KeyValue{
 			semconv.ServerAddress(host),
 			semconv.ServerPort(port),
 		},
-	})
+	}
+	if !o.ownSpan {
+		rt = otelhttp.NewTransport(rt)
+	}
 
 	return &Client{
 		base:    baseURL,
@@ -181,8 +230,17 @@ func NewClient(baseURL string, timeout time.Duration, store *faults.Store) *Clie
 		hc:      &http.Client{Transport: rt},
 		faults:  store,
 		timeout: timeout,
+		headers: o.headers,
 	}
 }
+
+// Host is the peer hostname derived from the base URL, as it appears in
+// server.address.
+func (c *Client) Host() string { return c.host }
+
+// Port is the peer port derived from the base URL, as it appears in
+// server.port.
+func (c *Client) Port() int { return c.port }
 
 // GetJSON performs a GET and decodes the JSON response into out.
 func (c *Client) GetJSON(ctx context.Context, path string, out any) error {
@@ -220,6 +278,9 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	req.Header.Set("Accept", "application/json")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range c.headers {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := c.hc.Do(req)

@@ -12,7 +12,12 @@ import (
 
 func handler(t *testing.T) http.Handler {
 	t.Helper()
-	h, err := newUIHandler()
+	return handlerWithAssist(t, true)
+}
+
+func handlerWithAssist(t *testing.T, assist bool) http.Handler {
+	t.Helper()
+	h, err := newUIHandler(assist)
 	if err != nil {
 		t.Fatalf("newUIHandler: %v", err)
 	}
@@ -162,5 +167,30 @@ func TestShellIsNotCached(t *testing.T) {
 	h := handler(t)
 	if cc := get(t, h, "/").Header().Get("Cache-Control"); cc != "no-store" {
 		t.Errorf("shell Cache-Control = %q, want no-store (it is templated per deploy)", cc)
+	}
+}
+
+// TestAssistFlagIsSubstituted guards the placeholder swap in newUIHandler.
+//
+// If the literal placeholder ever reached the browser it would be a JavaScript
+// syntax error, which blanks the whole page rather than just disabling the
+// assistant — so this asserts both that the flag lands and that no placeholder
+// survives.
+func TestAssistFlagIsSubstituted(t *testing.T) {
+	for _, tc := range []struct {
+		assist bool
+		want   string
+	}{
+		{true, "assist: true"},
+		{false, "assist: false"},
+	} {
+		body := get(t, handlerWithAssist(t, tc.assist), "/").Body.String()
+		if !strings.Contains(body, tc.want) {
+			t.Errorf("shell with assist=%v does not contain %q", tc.assist, tc.want)
+		}
+		if strings.Contains(body, assistPlaceholder) {
+			t.Errorf("shell with assist=%v still contains the raw placeholder %s",
+				tc.assist, assistPlaceholder)
+		}
 	}
 }

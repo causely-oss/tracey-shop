@@ -6,8 +6,21 @@ package registered in cmd/shopd/main.go.
 {{- $root := . -}}
 {{- $fullname := include "tracey-shop.fullname" . -}}
 {{- range $name, $svc := .Values.services }}
-{{- if $svc.enabled }}
 {{- $role := default $name $svc.role }}
+{{- /*
+The genAI roles carry a second gate, so the whole feature is one switch.
+model-gateway is additionally skipped when genai.external points at a real
+provider — the same "enabled and not external" shape the bundled backends use.
+*/ -}}
+{{- $genai := $root.Values.genai | default dict -}}
+{{- $enabled := $svc.enabled -}}
+{{- if eq $role "ai-assistant" -}}
+{{- $enabled = and $enabled $genai.enabled -}}
+{{- end -}}
+{{- if eq $role "llm-sim" -}}
+{{- $enabled = and $enabled $genai.enabled (not $genai.external) -}}
+{{- end -}}
+{{- if $enabled }}
 {{- $resources := default $root.Values.defaultResources $svc.resources }}
 ---
 apiVersion: apps/v1
@@ -84,6 +97,20 @@ spec:
             {{- with $svc.partnerLatency }}
             - name: PARTNER_LATENCY
               value: {{ . | quote }}
+            {{- end }}
+            {{- /*
+            The provider credential, and the only real secret in this chart.
+            Scoped to the one role that calls a provider rather than injected
+            through commonEnv into every pod. Absent entirely for the bundled
+            model-gateway, which needs no key at all.
+            */ -}}
+            {{- $apiKey := $genai.apiKey | default dict }}
+            {{- if and (eq $role "ai-assistant") $apiKey.secretName }}
+            - name: GENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $apiKey.secretName | quote }}
+                  key: {{ default "apiKey" $apiKey.secretKey | quote }}
             {{- end }}
             {{- include "tracey-shop.commonEnv" (dict "root" $root) | nindent 12 }}
             {{- with $svc.extraEnv }}

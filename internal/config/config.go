@@ -86,11 +86,53 @@ type Config struct {
 	// shows up as something a person would actually see.
 	WebUIEnabled bool
 
+	// GenAI. The shopping assistant's provider configuration.
+	//
+	// GenAIAPI selects the wire protocol, not the vendor: "openai" is any
+	// OpenAI-compatible /v1/chat/completions endpoint (OpenAI, Groq, Together,
+	// OpenRouter, Fireworks, DeepSeek, xAI, Mistral, Ollama, vLLM, LiteLLM,
+	// Azure OpenAI, Gemini's compat endpoint), and "anthropic" is the native
+	// Messages API. The bundled model-gateway speaks the OpenAI format, so it is
+	// not a third code path — it is "openai" pointed in-cluster with no key.
+	GenAIEnabled     bool
+	GenAIAPI         string
+	GenAIBaseURL     string
+	GenAIModel       string
+	GenAISystem      string
+	GenAIAPIKey      string
+	GenAIMaxTokens   int
+	GenAITemperature float64
+	GenAITimeout     time.Duration
+
+	// model-gateway shaping: the bundled provider's latency and how many output
+	// tokens it claims to have produced.
+	//
+	// Named GATEWAY, never SIM. Env var names are part of the pod spec, which
+	// Causely reads and quotes back in its remediation advice — a root cause
+	// whose fix is "tune GENAI_SIM_LATENCY" tells the audience the incident was
+	// staged, the same way a log line naming the injection would. Observed
+	// verbatim in an AIModel Malfunction remediation before the rename.
+	GenAIGatewayLatency      time.Duration
+	GenAIGatewayOutputTokens int
+
+	// Downstream genAI dependency, used by storefront-bff.
+	AIAssistURL string
+
 	// Load generator
 	LoadTargetURL   string
 	LoadRPS         float64
 	LoadConcurrency int
 	LoadMix         map[string]int
+	// LoadAssistRPS paces genAI traffic independently of LoadRPS, in absolute
+	// requests per second. Deliberately not a LoadMix weight: the mix is read
+	// once at startup and would make genAI volume scale with total shop load,
+	// so `scripts/load.sh 100` would silently multiply spend against a real
+	// provider.
+	//
+	// The CHART is what turns this on — it ships 0.5, so the AI entities exist
+	// in Causely from the first install. The 0 default here applies only to
+	// running the binary standalone, where there is no model-gateway to answer.
+	LoadAssistRPS float64
 }
 
 // Load reads the environment and applies defaults.
@@ -149,9 +191,27 @@ func Load() (*Config, error) {
 
 		WebUIEnabled: envBool("WEB_UI_ENABLED", true),
 
+		GenAIEnabled:     envBool("GENAI_ENABLED", false),
+		GenAIAPI:         env("GENAI_API", "openai"),
+		GenAIBaseURL:     env("GENAI_BASE_URL", ""),
+		GenAIModel:       env("GENAI_MODEL", ""),
+		GenAISystem:      env("GENAI_SYSTEM", ""),
+		GenAIAPIKey:      env("GENAI_API_KEY", ""),
+		GenAIMaxTokens:   envInt("GENAI_MAX_TOKENS", 256),
+		GenAITemperature: envFloat("GENAI_TEMPERATURE", 0.2),
+		GenAITimeout:     envDuration("GENAI_TIMEOUT", 30*time.Second),
+
+		// A real provider is never instant, and a flat floor gives Causely's
+		// InferenceDuration tdigest a realistic shape rather than a spike at zero.
+		GenAIGatewayLatency:      envDuration("GENAI_GATEWAY_LATENCY", 400*time.Millisecond),
+		GenAIGatewayOutputTokens: envInt("GENAI_GATEWAY_OUTPUT_TOKENS", 48),
+
+		AIAssistURL: env("AI_ASSIST_URL", "http://ai-assistant:8088"),
+
 		LoadTargetURL:   env("LOAD_TARGET_URL", "http://storefront-bff:8080"),
 		LoadRPS:         envFloat("LOAD_RPS", 20),
 		LoadConcurrency: envInt("LOAD_CONCURRENCY", 16),
+		LoadAssistRPS:   envFloat("LOAD_ASSIST_RPS", 0),
 	}
 
 	if c.Role == "" {
@@ -163,6 +223,7 @@ func Load() (*Config, error) {
 	if brokers := env("KAFKA_BROKERS", "kafka:9092"); brokers != "" {
 		c.KafkaBrokers = splitAndTrim(brokers)
 	}
+	c.normalizeGenAI()
 	c.LoadMix = map[string]int{
 		"browse":      envInt("LOAD_MIX_BROWSE", 50),
 		"search":      envInt("LOAD_MIX_SEARCH", 20),
@@ -172,6 +233,66 @@ func Load() (*Config, error) {
 	}
 	return c, nil
 }
+
+// normalizeGenAI fills in the provider-appropriate defaults.
+//
+// GENAI_SYSTEM matters more than it looks: its presence is the single trigger
+// Causely uses to classify a span as genAI at all (it checks
+// gen_ai.provider.name / gen_ai.system / llm.provider, before HTTP, RPC and DB).
+// The *value* is never validated or even stored — but an empty one would leave
+// the span looking like a plain HTTP call, so it must never end up blank.
+func (c *Config) normalizeGenAI() {
+	c.GenAIAPI = strings.ToLower(strings.TrimSpace(c.GenAIAPI))
+	if c.GenAIAPI == "" {
+		c.GenAIAPI = APIOpenAI
+	}
+
+	// Whether we are talking to the bundled model-gateway rather than a real
+	// provider, which decides the default model name.
+	//
+	// It cannot be inferred from GENAI_BASE_URL alone: the chart ALWAYS sets
+	// that, to the gateway's in-cluster URL when genai.external is empty. So the
+	// chart states it explicitly, and the empty-URL check below is the fallback
+	// for running the binary standalone. Getting this wrong is not cosmetic —
+	// the model name becomes half the AIModel entity name in Causely, so the
+	// demo would claim to be calling gpt-4o-mini while actually answering from
+	// the in-cluster mock.
+	bundled := c.GenAIBaseURL == ""
+	if v, err := strconv.ParseBool(env("GENAI_BUNDLED", "")); err == nil {
+		bundled = v
+	}
+	if c.GenAIBaseURL == "" {
+		c.GenAIBaseURL = "http://model-gateway:8089"
+	}
+	c.GenAIBaseURL = strings.TrimSuffix(c.GenAIBaseURL, "/")
+
+	if c.GenAIModel == "" {
+		switch {
+		case bundled:
+			c.GenAIModel = "mock-small-1"
+		case c.GenAIAPI == APIAnthropic:
+			c.GenAIModel = "claude-haiku-4-5"
+		default:
+			c.GenAIModel = "gpt-4o-mini"
+		}
+	}
+
+	if c.GenAISystem == "" {
+		// The semconv well-known values for these two wire formats.
+		switch c.GenAIAPI {
+		case APIAnthropic:
+			c.GenAISystem = "anthropic"
+		default:
+			c.GenAISystem = "openai"
+		}
+	}
+}
+
+// Wire protocols understood by internal/genai.
+const (
+	APIOpenAI    = "openai"
+	APIAnthropic = "anthropic"
+)
 
 func env(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {

@@ -138,3 +138,22 @@ type PartnerResponse struct {
 	Status    string `json:"status"`
 	Code      string `json:"code"`
 }
+
+// AssistRequest is a shopper's question for ai-assistant.
+type AssistRequest struct {
+	Question  string `json:"question"`
+	ProductID string `json:"productId,omitempty"`
+	CartID    string `json:"cartId,omitempty"`
+}
+
+// AssistResponse is ai-assistant's answer, with the model attribution a
+// genAI-aware UI would show. The token counts are the same values that go onto
+// the span as gen_ai.usage.*, which makes a browser click enough to sanity-check
+// what Causely will receive.
+type AssistResponse struct {
+	Answer       string `json:"answer"`
+	Model        string `json:"model"`
+	Provider     string `json:"provider"`
+	InputTokens  int64  `json:"inputTokens"`
+	OutputTokens int64  `json:"outputTokens"`
+}

@@ -83,6 +83,7 @@ Every scenario therefore emits a matching log. Two rules govern them, both enfor
 | `ledger-pool-exhaustion` | ERROR | ledger connection pool exhausted, journal writes are queueing | `connections_in_use`, `pool_size` |
 | `risk-crash` | ERROR + panic | unrecoverable error scoring order: feature vector dimension mismatch | (also the panic message, so the stack trace reads plausibly) |
 | `checkout-latency` | WARN | checkout orchestration latency degraded | `duration_ms`, `threshold_ms` |
+| `ai-model-malfunction` | ERROR | inference request failed: model backend returned no completion | `observed_failure_rate`, `retryable` |
 
 `cart-timeouts` is the one worth understanding. It emits on **both** sides: a latency warning at
 `cart-service` (the real cause) and a deadline error at `checkout-api` (the visible victim) naming
@@ -442,6 +443,53 @@ Latency injected at the orchestrator itself. Cause and symptom are the same serv
 
 - **Expected root cause:** `checkout-api`
 - **The test:** a sanity check. If Causely gets this wrong, something is misconfigured.
+
+### `ai-model-malfunction` — the failure is in the model, not the code
+
+```
+model-gateway  errorRate=0.5
+```
+
+Half of all inferences fail at the LLM provider. `model-gateway` returns HTTP 500, which lands on
+the genAI span as `http.response.status_code` — the **only** thing Causely counts as an inference
+error, since the span's own status is ignored (see [genai.md](genai.md)).
+
+- **Expected root cause:** **`AIModel Malfunction`** on the `mock-small-1/chat` AIModel entity
+- **Expected symptoms:** `Inference Error Rate` (`InferenceErrorRate_High`) on both the `AIModel`
+  and the `AIModelAccess` named `/assist accessing mock-small-1/chat`, plus
+  `RequestErrorRate_High` on `ai-assistant`
+- **The test:** an entity type that is not a service, a workload or a database. The failing thing is
+  a *model*, and the evidence for it exists only as attributes on a client span.
+
+Unlike every other scenario here, nothing needs to be turned on first: genAI traffic ships on at
+`loadgen.assistRPS: 0.5`, so the AI entities are already present and already have metrics.
+
+**Why 50% and not 35%,** which is what the payment scenarios use. Causely's
+`InferenceErrorRate_High` threshold is 10%, and the genAI trickle is only ~0.5 rps — so a 5-minute
+window holds about 150 inferences. 35% would fire, but 50% keeps a clear margin over the threshold
+at a rate that low, and keeps the story unambiguous on screen.
+
+**The rate matters more than usual.** All three genAI symptoms carry
+`@activation(condition=InferenceTotalRate > 0.1)`, so below ~0.1 rps of genAI traffic this scenario
+produces *nothing at all* — the AIModel entity and its token metrics stay visible and healthy, and
+no symptom ever fires. `loadgen.assistRPS: 0.5` leaves 5× headroom; a test in
+`cmd/shopd/main_test.go` asserts every shipped values file stays above the gate. To make it fire
+sooner, raise the genAI rate rather than the shop's:
+
+```bash
+./scripts/genai.sh 2      # ~4x the default, still trivial against the bundled gateway
+```
+
+Failed inferences still count toward `InferenceTotalRate`, so a high error rate never starves the
+activation condition.
+
+**Timing.** Budget **10-15 minutes**: the symptom has an activation delay of 10 over a 5-minute
+window. `./scripts/genai.sh 2` shortens it.
+
+**A real provider changes the shape.** Against `genai.external` the provider's own failures are
+what you would be waiting for, and `errorRate` on `model-gateway` does nothing because the bundled
+gateway is not deployed. Use `{"dependencyTimeoutMs":500}` on **`ai-assistant`** instead — the
+caller-side seam described in [genai.md](genai.md#breaking-it).
 
 ## Fault reference
 

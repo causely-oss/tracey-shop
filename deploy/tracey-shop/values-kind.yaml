@@ -12,6 +12,9 @@
 loadgen:
   rps: 10
   concurrency: 8
+  # Still above the InferenceTotalRate > 0.1 gate that every genAI symptom
+  # needs, so the ai-model-malfunction scenario works on a laptop too.
+  assistRPS: 0.5
   resources:
     requests: { cpu: 50m, memory: 48Mi }
     limits: { cpu: 500m, memory: 192Mi }
@@ -73,6 +76,8 @@ services:
   fraud-detector: { enabled: true, replicas: 1, protocol: none }
   risk-model: { enabled: true, replicas: 1, protocol: grpc, port: 9007 }
   notification-worker: { enabled: true, replicas: 1, protocol: none }
+  ai-assistant: { enabled: true, replicas: 1, protocol: http, port: 8088 }
+  model-gateway: { enabled: true, replicas: 1, protocol: http, port: 8089, role: llm-sim }
   stripe-sim:
     enabled: true
     replicas: 1
