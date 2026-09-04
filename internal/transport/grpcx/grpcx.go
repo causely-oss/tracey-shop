@@ -89,7 +89,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 // faultInterceptor runs the fault gate before every RPC and maps an injected
 // failure onto codes.Internal, which is what Causely reads from
-// rpc.grpc.status_code to compute the service's error rate.
+// rpc.response.status_code to compute the service's error rate (otelgrpc v0.70
+// replaced the numeric rpc.grpc.status_code with that string form; the mediator
+// reads either).
 func faultInterceptor(store *faults.Store) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if err := store.Gate(ctx); err != nil {

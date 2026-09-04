@@ -10,8 +10,10 @@
 #          is DROPPED on ingest and the service never appears in the topology.
 #   CLIENT spans with server.address
 #       -> how an outbound dependency edge is resolved to a peer Service.
-#   gRPC CLIENT spans with rpc.system
-#       -> required before Causely treats a span as an RPC call at all.
+#   gRPC CLIENT spans with rpc.system.name
+#       -> required before Causely treats a span as an RPC call at all. Spelled
+#          rpc.system before otelgrpc v0.70 / semconv 1.43; the mediator reads
+#          both, and this demo emits only the current one.
 #   db.system + db.query.text
 #       -> how Postgres/Valkey become database dependencies, and how slow
 #          queries are attributed.
@@ -238,14 +240,43 @@ else
   bad "server.address MISSING — no dependency edges will be built"
 fi
 if has 'server.port'; then ok "server.port present"; else bad "server.port missing"; fi
-if has 'rpc.system'; then
-  ok "rpc.system present — gRPC calls will be modelled as RPC"
+# Matched exactly, not as a substring: `has 'rpc.system'` would also match
+# rpc.system.name, so the old check passed either way and could never have
+# caught a regression.
+if grep -qE '^[[:space:]]*-> rpc\.system\.name: Str\(grpc\)' "$LOGFILE"; then
+  ok "rpc.system.name present — gRPC calls will be modelled as RPC"
+elif grep -qE '^[[:space:]]*-> rpc\.system: Str\(grpc\)' "$LOGFILE"; then
+  ok "rpc.system present (pre-otelgrpc-v0.70 spelling) — still read by the mediator"
+  info "the current convention is rpc.system.name; check OTEL_SEMCONV_STABILITY_OPT_IN"
 else
-  bad "rpc.system MISSING — gRPC edges will not be detected"
+  bad "no rpc system attribute — gRPC edges will not be detected"
 fi
-for attr in rpc.method rpc.grpc.status_code http.request.method http.response.status_code; do
+
+# The semconv 1.43 change dropped rpc.service and made rpc.method fully
+# qualified. Causely names the RPCMethod entity "<rpc.service>/<rpc.method>" and
+# falls back to rpc.method alone when rpc.service is absent, so the entity name
+# is unchanged — but only while exactly one of the two shapes is emitted.
+if grep -qE '^[[:space:]]*-> rpc\.service:' "$LOGFILE" \
+   && grep -qE '^[[:space:]]*-> rpc\.method: Str\([^)]*/' "$LOGFILE"; then
+  bad "rpc.service AND a fully qualified rpc.method are both present"
+  info "Causely would name the RPCMethod entity <service>/<service>/<method>"
+fi
+
+for attr in rpc.method http.request.method http.response.status_code; do
   if has "$attr"; then ok "$attr present"; else bad "$attr missing"; fi
 done
+
+# The gRPC status. otelgrpc v0.70 replaced the numeric rpc.grpc.status_code with
+# the string rpc.response.status_code ("OK", "INTERNAL", "UNAVAILABLE", ...).
+# The mediator counts an error when EITHER matches its code list, so either
+# spelling works — but one of them has to be there.
+if has 'rpc.response.status_code'; then
+  ok "rpc.response.status_code present — gRPC errors are attributable"
+elif has 'rpc.grpc.status_code'; then
+  ok "rpc.grpc.status_code present (pre-otelgrpc-v0.70 spelling)"
+else
+  bad "no gRPC status attribute — gRPC error rates will be understated"
+fi
 
 echo
 log "6. Database dependencies"
