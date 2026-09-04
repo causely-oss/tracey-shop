@@ -1,10 +1,12 @@
 package storefront
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,11 +35,24 @@ type uiHandler struct {
 	started time.Time
 }
 
-func newUIHandler() (http.Handler, error) {
+// assistPlaceholder is substituted in the shell at startup. Doing it once here
+// rather than exposing a /api/features endpoint keeps page loads from adding an
+// HTTPPath entity and traffic to storefront-bff's baseline.
+const assistPlaceholder = "__ASSIST_ENABLED__"
+
+func newUIHandler(assistEnabled bool) (http.Handler, error) {
 	index, err := webFS.ReadFile("web/index.html")
 	if err != nil {
 		return nil, fmt.Errorf("read storefront shell: %w", err)
 	}
+
+	if !bytes.Contains(index, []byte(assistPlaceholder)) {
+		// A silent no-op here would ship a shell containing the literal
+		// placeholder, which is a JavaScript syntax error and blanks the page.
+		return nil, fmt.Errorf("storefront shell is missing %s", assistPlaceholder)
+	}
+	index = bytes.ReplaceAll(index, []byte(assistPlaceholder),
+		[]byte(strconv.FormatBool(assistEnabled)))
 
 	assets, err := fs.Sub(webFS, "web")
 	if err != nil {

@@ -156,6 +156,26 @@ var narratives = map[string]Narrative{
 	"email-sim": {
 		Error: "message delivery rejected",
 	},
+	// The LLM provider. Written from the provider's own point of view — it is
+	// standing in for a hosted inference endpoint, so it reports what such an
+	// endpoint reports, not what a mock would.
+	//
+	// Causely reaches "AIModel Malfunction" from the InferenceErrorRate_High
+	// symptom, which it derives purely from the HTTP status code on the genAI
+	// span. These lines are what turn that into a description naming the actual
+	// failure mode rather than "inspect the application logs".
+	"model-gateway": {
+		Error:   "inference request failed: model backend returned no completion",
+		Latency: "inference exceeded its generation deadline",
+	},
+	// The caller. Its Error line matters on its own: when the provider is what
+	// broke, ai-assistant is the visible victim, and this is the log that names
+	// the provider rather than leaving the assistant looking like the origin.
+	"ai-assistant": {
+		Error:             "chat completion failed, no answer returned to the shopper",
+		Latency:           "chat completion latency degraded",
+		DependencyTimeout: "inference call exceeded its deadline, abandoning the answer",
+	},
 }
 
 // narrativeFor returns the service's messages, filling any blank field from the

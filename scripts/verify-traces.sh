@@ -17,6 +17,12 @@
 #          queries are attributed.
 #   messaging.destination.name + messaging.consumer.group.name
 #       -> how Kafka Produces/Consumes edges and consumer lag are modelled.
+#   gen_ai.system on a CLIENT span, with server.address, gen_ai.request.model
+#   and http.response.status_code
+#       -> how an inference becomes an AIModel entity. gen_ai.system's PRESENCE
+#          is the only trigger that classifies a span as genAI at all;
+#          http.response.status_code is the only source of error and rate-limit
+#          signal, because the span's own status is ignored.
 #
 # The collector must be running with debugVerbosity=detailed, because that is
 # what prints full span attributes into its log. Pass --upgrade to switch it on
@@ -154,6 +160,9 @@ SERVICES=(
   ledger-svc fraud-detector risk-model notification-worker
   stripe-sim carrier-sim email-sim web-client
 )
+# Only emit spans while genAI traffic is running (scripts/genai.sh), so they are
+# checked in section 9 rather than being required here.
+GENAI_SERVICES=(ai-assistant model-gateway)
 missing_services=()
 for svc in "${SERVICES[@]}"; do
   if has "service.name: Str($svc)"; then
@@ -285,7 +294,79 @@ for topic in orders ledger.events notifications; do
 done
 
 echo
-log "8. Exporter health"
+log "8. GenAI spans (AIModel entities)"
+
+# Every requirement below is one the mediator fails SILENTLY: analyzeGenAISpan
+# either is never reached or returns early, and nothing is logged above Debug.
+# See docs/genai.md.
+if ! has 'gen_ai.system'; then
+  info "no genAI spans in this sample — is genAI traffic running? (./scripts/genai.sh 0.5)"
+  info "skipping the genAI assertions rather than reporting them as failures"
+else
+  ok "gen_ai.system present — spans will be classified as genAI"
+
+  # Prove the Client-kind matcher works before trusting anything derived from
+  # it, the same guard section 4 uses. A genAI span MUST be CLIENT: the mediator
+  # only analyses genAI in the client pass.
+  if [[ "$(count_kind Client)" -gt 0 ]]; then
+    ok "Client spans present — genAI spans can be analysed at all"
+  else
+    bad "no Client spans, so no genAI span can be analysed"
+  fi
+
+  if has 'gen_ai.request.model'; then
+    ok "gen_ai.request.model present — the AIModel entity can be named"
+  else
+    bad "gen_ai.request.model MISSING — the mediator rejects a span with no model"
+  fi
+
+  if has 'gen_ai.operation.name'; then
+    ok "gen_ai.operation.name present"
+  else
+    info "gen_ai.operation.name absent (the mediator defaults it to 'chat')"
+  fi
+
+  # Token counts must be Int, not Double: the mediator's attribute reader
+  # accepts IntValue only and silently reads anything else as 0.
+  for attr in gen_ai.usage.input_tokens gen_ai.usage.output_tokens; do
+    if grep -qE "^[[:space:]]*-> ${attr}: Int\\(" "$LOGFILE"; then
+      ok "$attr present and Int-typed"
+    elif has "$attr"; then
+      bad "$attr present but NOT Int-typed — it will be read as 0"
+      grep -E "^[[:space:]]*-> ${attr}:" "$LOGFILE" | tail -1 | sed 's/^/       /'
+    else
+      bad "$attr MISSING — no token metrics will be attributed"
+    fi
+  done
+
+  # The only source of InferenceError / RateLimited. Its absence is invisible:
+  # the inference is simply counted as a success.
+  if has 'http.response.status_code'; then
+    ok "http.response.status_code present — inference errors and 429s are visible"
+  else
+    bad "http.response.status_code MISSING on genAI spans"
+    info "the span status is ignored, so without it every inference counts as a success"
+  fi
+
+  # server.address is checked in section 5 for the whole sample; here it must be
+  # on the genAI span itself or analyzeGenAISpan returns immediately.
+  if has 'server.address'; then
+    ok "server.address present — the provider Service can be resolved"
+  else
+    bad "server.address MISSING — no AIModel entity will be created"
+  fi
+
+  for svc in "${GENAI_SERVICES[@]}"; do
+    if has "service.name: Str($svc)"; then
+      ok "$svc is emitting spans"
+    else
+      info "$svc produced no spans in this sample"
+    fi
+  done
+fi
+
+echo
+log "9. Exporter health"
 
 if grep -qiE 'permanent error|connection refused|no such host|context deadline exceeded' "$LOGFILE"; then
   bad "the exporter is reporting errors — traces may not be reaching the mediator"

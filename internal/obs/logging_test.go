@@ -75,3 +75,53 @@ func TestControlPlaneEventsAreNotLoggedAtWarnOrError(t *testing.T) {
 		t.Fatalf("walk: %v", err)
 	}
 }
+
+// TestRenderedEnvVarNamesDoNotRevealTheDemo extends the narrative rule from log
+// messages to environment variable names.
+//
+// Env var names are part of the pod spec, which Causely reads — and quotes back
+// in its remediation advice. Observed verbatim in an `AIModel Malfunction`
+// remediation on a live cluster:
+//
+//	"consider adjusting the GENAI_SIM_LATENCY and REQUEST_TIMEOUT parameters"
+//
+// A root cause whose recommended fix names a knob called SIM tells the audience
+// the incident was staged, exactly like a log line naming the injection. The
+// variable was renamed to GENAI_GATEWAY_LATENCY; this keeps it that way.
+//
+// Deliberately scoped to the chart's env var NAMES, not values, and not the
+// ROLE values (`llm-sim`, `partner-sim`) which predate this rule and are
+// accepted — the demo already presents `stripe-sim` and friends as service
+// names in the topology.
+func TestRenderedEnvVarNamesDoNotRevealTheDemo(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "deploy", "tracey-shop", "templates", "_helpers.tpl"))
+	if err != nil {
+		t.Fatalf("read _helpers.tpl: %v", err)
+	}
+
+	// Same vocabulary internal/faults/narrative_test.go forbids in messages.
+	banned := []string{
+		"_SIM_", "_SIM ", "SIM_", "FAULT", "INJECT", "SCENARIO",
+		"SYNTHETIC", "CHAOS", "DEMO_", "MOCK", "FAKE", "STUB",
+	}
+
+	// Match `- name: SOME_VAR` in the env blocks.
+	re := regexp.MustCompile(`(?m)^\s*-\s+name:\s+([A-Z][A-Z0-9_]*)\s*$`)
+	matches := re.FindAllStringSubmatch(string(raw), -1)
+	if len(matches) == 0 {
+		t.Fatal("found no env var names in _helpers.tpl; the matcher is broken, " +
+			"so a pass here would be meaningless")
+	}
+
+	for _, m := range matches {
+		name := m[1]
+		for _, bad := range banned {
+			if strings.Contains(name, bad) {
+				t.Errorf("env var %q contains %q — it appears in the pod spec, and Causely "+
+					"quotes pod-spec settings in its remediation advice, which would reveal "+
+					"that the incident was staged", name, bad)
+			}
+		}
+	}
+	t.Logf("checked %d env var names", len(matches))
+}

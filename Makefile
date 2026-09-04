@@ -234,6 +234,10 @@ verify-lag: ## Check the Kafka consumer-lag pipeline
 scenarios: ## List the fault scenarios
 	./scripts/scenario.sh list
 
+.PHONY: genai
+genai: ## Show or set the genAI request rate, e.g. `make genai RPS=0.5` (0 = off)
+	./scripts/genai.sh $(RPS)
+
 .PHONY: port-forward
 port-forward: ## Expose the storefront on localhost:8080
 	kubectl -n $(NAMESPACE) port-forward svc/$(RELEASE)-storefront-bff 8080:8080

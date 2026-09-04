@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -105,6 +106,16 @@ func (d *Deps) Producer(ctx context.Context) (*kafkax.Producer, error) {
 // HTTPClient builds an instrumented client for a downstream base URL.
 func (d *Deps) HTTPClient(baseURL string) *httpx.Client {
 	return httpx.NewClient(baseURL, d.Cfg.RequestTimeout, d.Faults)
+}
+
+// HTTPClientWithTimeout is HTTPClient for a dependency whose latency profile
+// differs from the rest of the shop.
+//
+// The client's own timeout bounds every request it makes, so a caller cannot
+// widen it with a longer context — an inference takes seconds where a catalogue
+// read takes milliseconds, and the shared RequestTimeout would cut it off.
+func (d *Deps) HTTPClientWithTimeout(baseURL string, timeout time.Duration) *httpx.Client {
+	return httpx.NewClient(baseURL, timeout, d.Faults)
 }
 
 func (d *Deps) dial(target string) (*grpc.ClientConn, error) {

@@ -157,6 +157,93 @@ orderIntakeBackpressure:
   pollInterval: 15s
 
 # ---------------------------------------------------------------------------
+# GenAI shopping assistant
+#
+# Gives the demo a genAI surface so Causely's AI entities have something to
+# model: an `ai-assistant` service that calls an LLM provider and emits GenAI
+# OpenTelemetry spans, and a bundled `model-gateway` that answers them.
+#
+# Causely turns each of those spans into an `AIModel` entity named
+# "<model>/<operation>" (e.g. "mock-small-1/chat") layered over whichever Service
+# the provider hostname resolves to, plus an `AIModelAccess` from the calling
+# operation. That gives three symptoms — Inference Latency, Inference Error Rate
+# and Rate Limited — and two root causes, "AIModel Congested" and
+# "AIModel Malfunction".
+#
+# Traffic is ON by default at a slow trickle (loadgen.assistRPS: 0.5), so the AI
+# entities and their token metrics are present in Causely from the first install
+# with no extra step. It costs nothing, because the bundled model-gateway answers
+# it — but see the warning on loadgen.assistRPS before pointing genai.external at
+# a real provider. Change it live with `scripts/genai.sh`.
+#
+# See docs/genai.md for the ingest contract these spans have to satisfy.
+# ---------------------------------------------------------------------------
+
+genai:
+  enabled: true
+
+  # The wire protocol, not the vendor:
+  #   openai    - any OpenAI-compatible /v1/chat/completions endpoint. Covers
+  #               OpenAI, Groq, Together, OpenRouter, Fireworks, DeepSeek, xAI,
+  #               Mistral, Ollama, vLLM, LiteLLM, Azure OpenAI and Gemini's
+  #               compatibility endpoint.
+  #   anthropic - the native Messages API.
+  # Anything else needs a new shape in internal/genai.
+  api: openai
+
+  # Empty means the bundled model-gateway below: no API key, no egress, no cost,
+  # and the AIModel ends up layered over an in-cluster workload you can inject
+  # faults into. Set to a provider's base URL to use a real one, e.g.
+  # https://api.openai.com or https://api.anthropic.com — which also requires
+  # cluster egress and an apiKey secret.
+  external: ""
+
+  # Empty picks a cheap default: mock-small-1 for the bundled gateway,
+  # gpt-4o-mini for `api: openai`, claude-haiku-4-5 for `api: anthropic`.
+  #
+  # Whatever this is becomes half the AIModel entity name in Causely, and it
+  # must not end up empty — the mediator rejects a span with no model.
+  model: ""
+
+  # The value of gen_ai.system (and gen_ai.provider.name). Empty derives it from
+  # `api`.
+  #
+  # Causely never validates this string and does not even store it, but its
+  # PRESENCE is the single trigger that classifies a span as genAI at all. With
+  # it missing the span is treated as a plain HTTP call and no AIModel is ever
+  # created — silently.
+  system: ""
+
+  # Kept small: every token is billed against a real provider, and a stable
+  # prompt shape keeps Causely's TokenInputRate meaningful.
+  maxTokens: 256
+  temperature: 0.2
+  # Generous, because an inference is seconds where a catalogue read is
+  # milliseconds. Bounds the assistant's own client, not just its context.
+  timeout: 30s
+
+  # Referenced, never created by the chart, and never committed. Unlike every
+  # other credential in these values, this one is real, so create it yourself:
+  #
+  #   kubectl -n tracey-shop create secret generic tracey-shop-llm \
+  #     --from-literal=apiKey=sk-...
+  #
+  # Injected into ai-assistant only, not into every pod.
+  apiKey:
+    secretName: ""
+    secretKey: apiKey
+
+  # The bundled gateway's shaping. It is an ordinary service behind the fault
+  # gate, so `curl -XPOST .../admin/faults -d '{"errorRate":0.5}'` against it
+  # produces HTTP 500s that Causely counts as InferenceError.
+  gateway:
+    # A hosted model is never instant, and a flat floor gives Causely's
+    # InferenceDuration tdigest a realistic shape rather than a spike at zero.
+    latency: 400ms
+    # What the gateway claims to have generated, in output tokens.
+    outputTokens: 48
+
+# ---------------------------------------------------------------------------
 # Causely native integrations
 #
 # These wire the demo's backends into Causely's own scrapers, which is separate
@@ -330,6 +417,24 @@ loadgen:
   # upgrade: scripts/load.sh 80
   rps: 20
   concurrency: 16
+  # GenAI requests per second, ABSOLUTE and independent of `rps` above — so
+  # raising shop load never multiplies spend against a real LLM provider.
+  # Change live: scripts/genai.sh 0.5
+  #
+  # ON by default, so the AIModel and AIModelAccess entities and their token
+  # metrics appear in Causely as soon as the demo is installed, with no extra
+  # step. Free at this default, because the bundled model-gateway answers it.
+  #
+  # 0.5 is deliberately not lower. All three genAI symptoms — Inference Latency,
+  # Inference Error Rate and Rate Limited — are gated on
+  # `InferenceTotalRate > 0.1`, so below ~0.1 rps the entities and token metrics
+  # still appear but NO genAI symptom can ever fire, which would silently make
+  # the ai-model-malfunction scenario produce nothing. 0.5 leaves 5x headroom.
+  #
+  # >>> Setting genai.external to a real provider makes this a real bill: about
+  # 1,800 inferences an hour, every hour, unattended. Lower it or set it to 0
+  # when you do that. <<<
+  assistRPS: 0.5
   # Relative weights; normalised at runtime.
   mix:
     browse: 50
@@ -442,6 +547,26 @@ services:
     enabled: true
     replicas: 1
     protocol: none
+
+  # --- genAI --------------------------------------------------------------
+  # Both are additionally gated on genai.enabled, and model-gateway is skipped
+  # when genai.external points at a real provider.
+  ai-assistant:
+    enabled: true
+    replicas: 1
+    protocol: http
+    port: 8088
+
+  # The bundled LLM provider. Named for what it is in the topology rather than
+  # for its implementation — Causely layers the AIModel over this Service, so
+  # this name is what appears as the model's provider. The role stays `llm-sim`,
+  # the same split the three partner simulators use.
+  model-gateway:
+    enabled: true
+    replicas: 1
+    protocol: http
+    port: 8089
+    role: llm-sim
 
   # --- simulated third parties -------------------------------------------
   stripe-sim:

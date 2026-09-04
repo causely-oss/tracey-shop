@@ -218,6 +218,87 @@ function productCardHTML(p) {
     </a>`;
 }
 
+/* ---------------------------------------------------------------------------
+ * The genAI assistant.
+ *
+ * Rendered only when the feature is configured (window.SHOP_FEATURES.assist,
+ * substituted into the shell by web.go). It is the only place a person watching
+ * the demo can see an inference happen, and it shows the model and token counts
+ * because those are exactly the values that ride on the span as
+ * gen_ai.response.model and gen_ai.usage.* — so one click is enough to sanity
+ * check what Causely is about to receive.
+ * ------------------------------------------------------------------------- */
+
+function assistEnabled() {
+  return !!(window.SHOP_FEATURES && window.SHOP_FEATURES.assist);
+}
+
+function assistBoxHTML() {
+  if (!assistEnabled()) return '';
+  return `
+    <div class="assist" id="assist">
+      <label class="assist-label" for="assist-question">Ask about this product</label>
+      <div class="assist-row">
+        <input id="assist-question" type="text" autocomplete="off"
+          placeholder="How long does delivery take?">
+        <button id="assist-ask" class="btn btn-secondary" type="button">Ask</button>
+      </div>
+      <div id="assist-answer" class="assist-answer" hidden></div>
+    </div>`;
+}
+
+function wireAssist(productId) {
+  if (!assistEnabled()) return;
+
+  const input = document.getElementById('assist-question');
+  const btn = document.getElementById('assist-ask');
+  const out = document.getElementById('assist-answer');
+  if (!input || !btn || !out) return;
+
+  const ask = async () => {
+    const question = input.value.trim();
+    if (!question) {
+      input.focus();
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Thinking…';
+    out.hidden = false;
+    out.textContent = 'Asking the model…';
+
+    try {
+      /* Exactly domain.AssistRequest — storefront-bff decodes with
+         DisallowUnknownFields, so no extra keys. */
+      const res = await api('POST', '/api/assist', { question, productId });
+      const tokens = (res.inputTokens || 0) + (res.outputTokens || 0);
+      out.innerHTML = `
+        <p class="assist-text">${esc(res.answer || 'No answer returned.')}</p>
+        <p class="assist-meta">${esc(res.model || 'unknown model')}
+          ${res.provider ? `· ${esc(res.provider)}` : ''}
+          · ${tokens} token${tokens === 1 ? '' : 's'}</p>`;
+      clearError();
+    } catch (err) {
+      /* Surfaced in the box rather than only the shared banner: when the
+         provider is what broke, the failure should be visible next to the thing
+         that failed. */
+      out.innerHTML = `<p class="assist-text assist-failed">The assistant is unavailable right now.</p>`;
+      showError(`We couldn't answer that. ${err.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Ask';
+    }
+  };
+
+  btn.addEventListener('click', ask);
+  input.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      ask();
+    }
+  });
+}
+
 async function viewSearch(params) {
   const q = params.get('q') || '';
   renderCategories('');
@@ -265,8 +346,11 @@ async function viewProduct(id) {
             data-product-id="${esc(p.id)}" ${p.available > 0 ? '' : 'disabled'}>Add to cart</button>
           <a class="btn btn-secondary" href="/cart" data-nav>Go to cart</a>
         </div>
+        ${assistBoxHTML()}
       </div>
     </div>`;
+
+  wireAssist(p.id);
 
   document.getElementById('add-to-cart').addEventListener('click', async ev => {
     const btn = ev.currentTarget;
