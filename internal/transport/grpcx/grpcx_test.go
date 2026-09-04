@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,19 +144,66 @@ func TestClientSpanPinsDNSPeerAddress(t *testing.T) {
 		t.Errorf("server.port = %d, want %d", gotPort.AsInt64(), port)
 	}
 
-	// Causely requires rpc.system before it treats a span as an RPC call at all.
-	sys, ok := attrOf(clientSpan, "rpc.system")
+	// Causely requires the rpc system attribute before it treats a span as an
+	// RPC call at all, so its absence costs every gRPC edge in the topology.
+	//
+	// otelgrpc v0.70.0 moved to the semconv 1.43 spelling: rpc.system became
+	// rpc.system.name. Causely's mediator reads both, and this demo tracks the
+	// current convention rather than opting back into the old one with
+	// OTEL_SEMCONV_STABILITY_OPT_IN=rpc/dup.
+	sys, ok := attrOf(clientSpan, "rpc.system.name")
 	if !ok {
-		t.Fatal("gRPC CLIENT span is missing rpc.system — gRPC edges will not be detected")
+		t.Fatal("gRPC CLIENT span is missing rpc.system.name — gRPC edges will not be detected")
 	}
 	if sys.AsString() != "grpc" {
-		t.Errorf("rpc.system = %q, want \"grpc\"", sys.AsString())
+		t.Errorf("rpc.system.name = %q, want \"grpc\"", sys.AsString())
 	}
 
-	for _, key := range []string{"rpc.method", "rpc.service"} {
-		if _, ok := attrOf(clientSpan, key); !ok {
-			t.Errorf("gRPC CLIENT span is missing %s", key)
+	// The same change dropped rpc.service and made rpc.method the fully
+	// qualified name. That is load-bearing rather than cosmetic: Causely builds
+	// an RPCMethod entity named "<rpc.service>/<rpc.method>", and falls back to
+	// rpc.method alone when rpc.service is absent — so the entity keeps the
+	// exact same display name, e.g. shop.v1.PaymentService/Authorize.
+	//
+	// Asserting the shape here is what stops a future bump from silently
+	// renaming every RPCMethod entity in the demo.
+	method, ok := attrOf(clientSpan, "rpc.method")
+	if !ok {
+		t.Fatal("gRPC CLIENT span is missing rpc.method")
+	}
+	if !strings.Contains(method.AsString(), "/") {
+		t.Errorf("rpc.method = %q, want the fully qualified <service>/<method> — "+
+			"Causely would otherwise name the RPCMethod entity with the bare method",
+			method.AsString())
+	}
+
+	// Deliberately asserted absent. If a future otelgrpc starts emitting
+	// rpc.service again alongside a fully qualified rpc.method, Causely would
+	// name the entity "<service>/<service>/<method>".
+	if svc, present := attrOf(clientSpan, "rpc.service"); present {
+		t.Errorf("rpc.service is present (%q) alongside a fully qualified rpc.method; "+
+			"Causely would double up the RPCMethod entity name", svc.AsString())
+	}
+
+	// The old spelling must be gone, since we are not opting into rpc/dup.
+	if _, present := attrOf(clientSpan, "rpc.system"); present {
+		t.Error("rpc.system is still present; the old convention was expected to be dropped")
+	}
+
+	// The gRPC status, which is what every gRPC error rate in the demo is
+	// computed from. otelgrpc v0.70 replaced the numeric rpc.grpc.status_code
+	// with this string form. The mediator counts a failure when either the
+	// string is in its RCP_ERROR_CODES or the number is in GRCP_ERROR_CODES, so
+	// losing both would silently understate every gRPC error rate — which is
+	// what payment-errors and the order-intake backpressure both depend on.
+	status, ok := attrOf(clientSpan, "rpc.response.status_code")
+	if !ok {
+		if _, old := attrOf(clientSpan, "rpc.grpc.status_code"); !old {
+			t.Fatal("gRPC CLIENT span carries neither rpc.response.status_code nor " +
+				"rpc.grpc.status_code — gRPC error rates would be understated")
 		}
+	} else if status.AsString() != "OK" {
+		t.Errorf("rpc.response.status_code = %q on a healthy call, want \"OK\"", status.AsString())
 	}
 }
 
@@ -204,7 +252,7 @@ func TestServerSpanRecordedAndTraceLinked(t *testing.T) {
 }
 
 // TestFaultInterceptorReturnsInternal verifies an injected fault surfaces as
-// gRPC INTERNAL, which is what Causely reads from rpc.grpc.status_code.
+// gRPC INTERNAL, which Causely reads from rpc.response.status_code.
 func TestFaultInterceptorReturnsInternal(t *testing.T) {
 	setupRecorder(t)
 

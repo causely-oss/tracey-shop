@@ -302,7 +302,7 @@ commands for EKS, GKE and AKS.
 ## Verifying before you blame the platform
 
 `scripts/verify-traces.sh` samples the collector's own output and asserts every attribute the
-mediator depends on: resource `k8s.*`, `server.address` on CLIENT spans, `rpc.system` on gRPC,
+mediator depends on: resource `k8s.*`, `server.address` on CLIENT spans, `rpc.system.name` on gRPC,
 `db.system` + `db.query.text` on database spans, and
 `messaging.destination.name` + `messaging.consumer.group.name` on Kafka spans. It also flags
 exporter errors.

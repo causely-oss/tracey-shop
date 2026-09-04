@@ -94,7 +94,28 @@ call contributes nothing.
 | Edge | Required | Also used |
 |---|---|---|
 | HTTP client | `server.address` (or `url.full`) | `server.port`, `http.request.method`, `http.response.status_code`, `url.path` |
-| gRPC client | `rpc.system` **and** a peer address | `rpc.method`, `rpc.service`, `rpc.grpc.status_code`, `server.port` |
+| gRPC client | `rpc.system.name` **and** a peer address | `rpc.method` (fully qualified), `rpc.response.status_code`, `server.port` |
+
+> **`rpc.system` was renamed to `rpc.system.name`** in semconv 1.43, which
+> `otelgrpc` v0.70 adopted. The same change dropped `rpc.service` and made
+> `rpc.method` the fully qualified `<service>/<method>`.
+>
+> The mediator reads both spellings (`RPCSystemNameKey`, then `rpc.system`), and
+> names an `RPCMethod` entity `<rpc.service>/<rpc.method>` — falling back to
+> `rpc.method` alone when `rpc.service` is absent. So the entity keeps the exact
+> same name, e.g. `shop.v1.PaymentService/Authorize`, and this demo emits only
+> the current convention rather than opting back in with
+> `OTEL_SEMCONV_STABILITY_OPT_IN=rpc/dup`.
+>
+> The numeric `rpc.grpc.status_code` was replaced by the string
+> `rpc.response.status_code` (`OK`, `INTERNAL`, `UNAVAILABLE`, ...). The mediator
+> counts a request as failed when *either* the string matches `RCP_ERROR_CODES`
+> or the number matches `GRCP_ERROR_CODES`, and both `INTERNAL` and `UNAVAILABLE`
+> — the codes this demo's scenarios use — are in the string list.
+>
+> One consequence: `RPCMethodId` is `rpc-endpoint:<service>:<rpc.service>:<rpc.method>`,
+> so the ids changed shape and the RPCMethod entities are recreated once on the
+> upgrade. Their metric and SLO history restarts with them.
 | Database | `db.system` and `db.query.text` (or `db.statement`) and `server.address` | `db.namespace`, `db.collection.name`, `db.operation.name` |
 | Kafka | `messaging.destination.name` and a broker address | `messaging.system`, `messaging.consumer.group.name`, `messaging.operation.name` |
 
@@ -110,7 +131,7 @@ just a topic. Without it the `fraud-lag` scenario cannot be pinned to `fraud-det
 | Edge | Source |
 |---|---|
 | HTTP client/server | `otelhttp` v0.62, which emits the stable HTTP semconv by default |
-| gRPC client/server | `otelgrpc` v0.62 (`rpc.system`, `rpc.method`, `rpc.grpc.status_code`) |
+| gRPC client/server | `otelgrpc` v0.70 (`rpc.system.name`, fully qualified `rpc.method`, `rpc.response.status_code`) |
 | Postgres | `otelpgx` (`db.system=postgresql`, `db.query.text`, `db.namespace`, `server.address`) |
 | Valkey | `redisotel` (`db.system=redis`, `db.statement`, `server.address`) |
 | Kafka | hand-written spans in `internal/transport/kafkax` |
