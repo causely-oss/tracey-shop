@@ -113,9 +113,16 @@ call contributes nothing.
 > or the number matches `GRCP_ERROR_CODES`, and both `INTERNAL` and `UNAVAILABLE`
 > — the codes this demo's scenarios use — are in the string list.
 >
-> One consequence: `RPCMethodId` is `rpc-endpoint:<service>:<rpc.service>:<rpc.method>`,
-> so the ids changed shape and the RPCMethod entities are recreated once on the
-> upgrade. Their metric and SLO history restarts with them.
+> **The migration is fully transparent** — no entity is renamed and none is
+> recreated. `getRPCServiceAndMethod` splits a fully qualified `rpc.method` back
+> into service and method whenever `rpc.service` is absent, so the mediator
+> reconstructs the same two values it used to read directly. Verified on a live
+> cluster: all eleven `RPCMethod` entities kept both their names *and* their
+> entity ids across the upgrade, so metric and SLO history is continuous.
+>
+> (An earlier version of this note claimed the ids change and history restarts.
+> That was wrong — it reasoned from `RPCMethodId`'s inputs without accounting for
+> the split.)
 | Database | `db.system` and `db.query.text` (or `db.statement`) and `server.address` | `db.namespace`, `db.collection.name`, `db.operation.name` |
 | Kafka | `messaging.destination.name` and a broker address | `messaging.system`, `messaging.consumer.group.name`, `messaging.operation.name` |
 
