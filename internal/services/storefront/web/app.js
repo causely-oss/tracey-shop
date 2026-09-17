@@ -339,7 +339,12 @@ async function viewProduct(id) {
           : `<span class="stock-out">Currently out of stock.</span>`}</p>
         <div class="qty">
           <label for="quantity">Quantity</label>
-          <input id="quantity" type="number" min="1" max="5" value="1">
+          <input id="quantity" type="number" min="1" max="500" value="1">
+        </div>
+        <div class="qty-presets">
+          <button type="button" class="chip" data-qty="1">Single</button>
+          <button type="button" class="chip" data-qty="12">Case of 12</button>
+          <button type="button" class="chip" data-qty="250">Pallet of 250</button>
         </div>
         <div class="btn-row">
           <button id="add-to-cart" class="btn" type="button"
@@ -352,9 +357,18 @@ async function viewProduct(id) {
 
   wireAssist(p.id);
 
+  /* Wholesale customers order by the case, so the quantity box has presets
+     rather than making them type three digits. */
+  document.querySelectorAll('.qty-presets .chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      document.getElementById('quantity').value = chip.dataset.qty;
+    });
+  });
+
   document.getElementById('add-to-cart').addEventListener('click', async ev => {
     const btn = ev.currentTarget;
-    const qty = Math.max(1, parseInt(document.getElementById('quantity').value, 10) || 1);
+    const qty = Math.min(500,
+      Math.max(1, parseInt(document.getElementById('quantity').value, 10) || 1));
     btn.disabled = true;
     btn.textContent = 'Adding…';
     try {

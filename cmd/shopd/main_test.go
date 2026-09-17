@@ -18,9 +18,10 @@ type chartValues struct {
 		Port     int    `yaml:"port"`
 	} `yaml:"services"`
 	Loadgen struct {
-		Enabled   bool    `yaml:"enabled"`
-		Name      string  `yaml:"name"`
-		AssistRPS float64 `yaml:"assistRPS"`
+		Enabled      bool    `yaml:"enabled"`
+		Name         string  `yaml:"name"`
+		AssistRPS    float64 `yaml:"assistRPS"`
+		WholesaleRPS float64 `yaml:"wholesaleRPS"`
 	} `yaml:"loadgen"`
 	GenAI struct {
 		Enabled  bool   `yaml:"enabled"`
@@ -235,6 +236,30 @@ func TestGenAIShipsOnAndAboveTheActivationGate(t *testing.T) {
 					"InferenceTotalRate > %v activation gate — the AI entities would appear "+
 					"but no genAI symptom could ever fire",
 					values.Loadgen.AssistRPS, activationGate)
+			}
+		})
+	}
+}
+
+// TestWholesaleTrafficShipsOff guards the baseline.
+//
+// `helm install` has to produce a clean, error-free demo — that is the
+// prerequisite for every scenario, because Causely should find nothing until
+// something is actually wrong. Wholesale orders are a separate channel with a
+// much larger basket, and shipping them on by default would change what the
+// baseline looks like before anyone has asked for it.
+//
+// Checked in every values file that ships, because an overlay is the easy place
+// to set a rate and forget it.
+func TestWholesaleTrafficShipsOff(t *testing.T) {
+	for _, file := range []string{"values.yaml", "values-kind.yaml", "values-cloud.yaml"} {
+		t.Run(file, func(t *testing.T) {
+			values := parseChartValues(t, file)
+
+			if values.Loadgen.WholesaleRPS != 0 {
+				t.Errorf("loadgen.wholesaleRPS is %v, not 0 — the shipped baseline would "+
+					"carry wholesale traffic that nobody asked for",
+					values.Loadgen.WholesaleRPS)
 			}
 		})
 	}

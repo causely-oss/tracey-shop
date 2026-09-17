@@ -221,7 +221,13 @@ func StartReconciler(ctx context.Context, pool *pgxx.Pool) {
 // every scenario that runs through checkout.
 const (
 	// restockLowWater is the per-product level that triggers a top-up.
-	restockLowWater = 200
+	//
+	// Kept above the largest quantity a single order line can carry, so the
+	// stock check is never the thing that fails first. Wholesale orders are
+	// case quantities, and a floor that a case can dip under would make those
+	// orders fail at inventory-svc for reasons that have nothing to do with
+	// the order itself.
+	restockLowWater = 400
 	// restockTarget is the level a restocked product returns to.
 	restockTarget = 1000
 	// restockInterval is how often stock is topped up. Frequent enough that a

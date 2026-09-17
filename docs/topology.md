@@ -71,6 +71,12 @@ fraud-detector consumes orders
           → email-sim (HTTP)
 ```
 
+**Wholesale checkout** — the same `POST /api/checkout` fan-out as above, from a
+B2B customer ordering by the case: four distinct products at case quantities
+rather than a couple of units. It walks an identical path through the graph; only
+the size of the order differs. Paced separately from the consumer mix and idle by
+default (`loadgen.wholesaleRPS`, `scripts/wholesale.sh`).
+
 **Assist** (`POST /api/assist`) — the genAI path, off by default:
 
 ```

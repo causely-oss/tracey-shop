@@ -15,6 +15,7 @@ loadgen:
   # Still above the InferenceTotalRate > 0.1 gate that every genAI symptom
   # needs, so the ai-model-malfunction scenario works on a laptop too.
   assistRPS: 0.5
+  wholesaleRPS: 0
   resources:
     requests: { cpu: 50m, memory: 48Mi }
     limits: { cpu: 500m, memory: 192Mi }
