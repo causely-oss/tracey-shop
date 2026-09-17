@@ -133,6 +133,15 @@ type Config struct {
 	// in Causely from the first install. The 0 default here applies only to
 	// running the binary standalone, where there is no model-gateway to answer.
 	LoadAssistRPS float64
+	// LoadWholesaleRPS paces wholesale (case-quantity) orders independently of
+	// LoadRPS, in absolute requests per second. Deliberately not a LoadMix
+	// weight, for the same reason as LoadAssistRPS: the mix is read once at
+	// startup, and a weight would make wholesale volume scale with total shop
+	// load rather than staying where it was set.
+	//
+	// Ships at 0 in every values file. This shop's default traffic is consumer
+	// traffic; the wholesale channel is raised with scripts/wholesale.sh.
+	LoadWholesaleRPS float64
 }
 
 // Load reads the environment and applies defaults.
@@ -208,10 +217,11 @@ func Load() (*Config, error) {
 
 		AIAssistURL: env("AI_ASSIST_URL", "http://ai-assistant:8088"),
 
-		LoadTargetURL:   env("LOAD_TARGET_URL", "http://storefront-bff:8080"),
-		LoadRPS:         envFloat("LOAD_RPS", 20),
-		LoadConcurrency: envInt("LOAD_CONCURRENCY", 16),
-		LoadAssistRPS:   envFloat("LOAD_ASSIST_RPS", 0),
+		LoadTargetURL:    env("LOAD_TARGET_URL", "http://storefront-bff:8080"),
+		LoadRPS:          envFloat("LOAD_RPS", 20),
+		LoadConcurrency:  envInt("LOAD_CONCURRENCY", 16),
+		LoadAssistRPS:    envFloat("LOAD_ASSIST_RPS", 0),
+		LoadWholesaleRPS: envFloat("LOAD_WHOLESALE_RPS", 0),
 	}
 
 	if c.Role == "" {

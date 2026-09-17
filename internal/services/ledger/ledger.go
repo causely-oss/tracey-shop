@@ -33,6 +33,29 @@ const (
 	accountRevenue            = "revenue:sales"
 )
 
+// maxPostingCents is the largest amount the downstream accounting system will
+// accept on a single journal line. Settlements above it are posted as several
+// lines against the same journal id.
+//
+// It sits well above any consumer order — the catalogue tops out at $249.04 and
+// a cart holds a handful of units — so an ordinary checkout is always a single
+// line. Wholesale carts are case quantities and routinely clear it.
+const maxPostingCents = 250_000 // $2,500
+
+// splitPostings breaks a settlement into journal lines no larger than the
+// posting limit. The lines must sum to exactly the settlement amount, or the
+// journal will not balance and the period will not reconcile.
+func splitPostings(cents int64) []int64 {
+	if cents <= maxPostingCents {
+		return []int64{cents}
+	}
+	lines := make([]int64, 0, cents/maxPostingCents+1)
+	for remaining := cents; remaining > 0; remaining -= maxPostingCents {
+		lines = append(lines, maxPostingCents)
+	}
+	return lines
+}
+
 type server struct {
 	shopv1.UnimplementedLedgerServiceServer
 	deps     *app.Deps
@@ -78,13 +101,39 @@ func (s *server) RecordTransaction(ctx context.Context, req *shopv1.RecordTransa
 
 	journalID := domain.NewID("jrnl")
 
+	// Anything above the downstream system's line cap is posted as several
+	// lines against this journal.
+	postings := splitPostings(amount.Cents)
+
+	var posted int64
+	for _, p := range postings {
+		posted += p
+	}
+	// Checked before the transaction is opened: a journal whose lines do not
+	// sum to the authorized amount would silently corrupt the ledger, and
+	// writing rows only to roll them back would put the churn on Postgres for
+	// nothing.
+	if posted != amount.Cents {
+		slog.Error("journal entries do not balance the authorized amount, refusing to post",
+			append(obs.LogTraceCtx(ctx),
+				slog.String("transaction_id", req.GetTransactionId()),
+				slog.String("order_id", req.GetOrderId()),
+				slog.Int64("authorized_cents", amount.Cents),
+				slog.Int64("posted_cents", posted),
+				slog.Int("posting_lines", len(postings)),
+				slog.Int64("line_cap_cents", maxPostingCents))...)
+		return nil, status.Error(codes.Internal,
+			"journal entries do not balance the authorized amount")
+	}
+
 	tx, err := s.pg.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin ledger tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// A debit and a matching credit, so the ledger always balances.
+	// A debit and a matching credit per posting line, so the ledger always
+	// balances.
 	entries := []struct {
 		account   string
 		direction string
@@ -92,15 +141,17 @@ func (s *server) RecordTransaction(ctx context.Context, req *shopv1.RecordTransa
 		{accountAccountsReceivable, "debit"},
 		{accountRevenue, "credit"},
 	}
-	for _, e := range entries {
-		if _, err := tx.Exec(ctx, `
+	for _, line := range postings {
+		for _, e := range entries {
+			if _, err := tx.Exec(ctx, `
             INSERT INTO ledger_entries
                 (journal_id, transaction_id, order_id, account, direction, amount_cents)
             VALUES ($1, $2, $3, $4, $5, $6)`,
-			journalID, req.GetTransactionId(), req.GetOrderId(),
-			e.account, e.direction, amount.Cents,
-		); err != nil {
-			return nil, fmt.Errorf("insert %s entry: %w", e.direction, err)
+				journalID, req.GetTransactionId(), req.GetOrderId(),
+				e.account, e.direction, line,
+			); err != nil {
+				return nil, fmt.Errorf("insert %s entry: %w", e.direction, err)
+			}
 		}
 	}
 
@@ -124,7 +175,7 @@ func (s *server) RecordTransaction(ctx context.Context, req *shopv1.RecordTransa
 
 	return &shopv1.RecordTransactionResponse{
 		JournalId:  journalID,
-		EntryCount: int64(len(entries)),
+		EntryCount: int64(len(entries) * len(postings)),
 	}, nil
 }
 

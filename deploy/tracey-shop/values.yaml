@@ -435,6 +435,10 @@ loadgen:
   # 1,800 inferences an hour, every hour, unattended. Lower it or set it to 0
   # when you do that. <<<
   assistRPS: 0.5
+  # Wholesale (case-quantity) orders per second, ABSOLUTE and independent of
+  # `rps` above. This shop's default traffic is consumer traffic, so it ships
+  # at 0. Raise it live, with no helm upgrade: scripts/wholesale.sh 0.5
+  wholesaleRPS: 0
   # Relative weights; normalised at runtime.
   mix:
     browse: 50
