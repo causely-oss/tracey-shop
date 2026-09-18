@@ -35,6 +35,25 @@ func TestNoPostingExceedsTheLineCap(t *testing.T) {
 	}
 }
 
+// TestLinesSumToTheSettlement is the invariant RecordTransaction enforces
+// before it opens the Postgres transaction: a journal whose lines do not add up
+// to the authorized amount is refused outright, so every checkout over the cap
+// fails. The cases below deliberately include amounts that are not exact
+// multiples of the cap, which is where the remainder line matters.
+func TestLinesSumToTheSettlement(t *testing.T) {
+	for _, cents := range []int64{1, maxPostingCents, maxPostingCents + 1, 500_000, 540_160, 13_946_240} {
+		var posted int64
+		lines := splitPostings(cents)
+		for _, line := range lines {
+			posted += line
+		}
+		if posted != cents {
+			t.Errorf("splitPostings(%d) posted %d across %d lines, want %d",
+				cents, posted, len(lines), cents)
+		}
+	}
+}
+
 // TestLineCapIsAboveConsumerOrderRange pins the cap against the catalogue.
 //
 // A consumer cart holds at most two lines of two units, and the catalogue tops
