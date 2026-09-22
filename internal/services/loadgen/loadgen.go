@@ -47,16 +47,20 @@ type generator struct {
 	// milliseconds, and httpx.Client bounds every request by its own timeout.
 	assistClient *httpx.Client
 
-	rateMu      sync.RWMutex
-	rps         float64
-	concurrency int
-	assistRPS   float64
+	rateMu       sync.RWMutex
+	rps          float64
+	concurrency  int
+	assistRPS    float64
+	wholesaleRPS float64
 
 	completed atomic.Int64
 	failed    atomic.Int64
 
 	assistCompleted atomic.Int64
 	assistFailed    atomic.Int64
+
+	wholesaleCompleted atomic.Int64
+	wholesaleFailed    atomic.Int64
 }
 
 type weightedAction struct {
@@ -73,6 +77,7 @@ func Run(ctx context.Context, d *app.Deps) error {
 		rps:          d.Cfg.LoadRPS,
 		concurrency:  d.Cfg.LoadConcurrency,
 		assistRPS:    d.Cfg.LoadAssistRPS,
+		wholesaleRPS: d.Cfg.LoadWholesaleRPS,
 	}
 	g.mix = buildMix(d.Cfg.LoadMix)
 	if len(g.mix) == 0 {
@@ -92,6 +97,11 @@ func Run(ctx context.Context, d *app.Deps) error {
 	if d.Cfg.GenAIEnabled {
 		go g.runAssist(ctx)
 	}
+
+	// The wholesale channel needs no feature gate: it drives the same checkout
+	// endpoint consumer traffic does, so there is no extra deployment that has
+	// to exist first. It is simply paced at 0 until someone asks for it.
+	go g.runWholesale(ctx)
 
 	// Give the rest of the deployment a moment to become ready, so the first
 	// requests of a fresh install do not show up as errors in the baseline.
@@ -204,7 +214,10 @@ func (g *generator) reportLoop(ctx context.Context) {
 				slog.Float64("rps", g.currentRPS()),
 				slog.Int64("assist_completed", g.assistCompleted.Load()),
 				slog.Int64("assist_failed", g.assistFailed.Load()),
-				slog.Float64("assist_rps", g.currentAssistRPS()))
+				slog.Float64("assist_rps", g.currentAssistRPS()),
+				slog.Int64("wholesale_completed", g.wholesaleCompleted.Load()),
+				slog.Int64("wholesale_failed", g.wholesaleFailed.Load()),
+				slog.Float64("wholesale_rps", g.currentWholesaleRPS()))
 		}
 	}
 }
@@ -219,6 +232,12 @@ func (g *generator) currentAssistRPS() float64 {
 	g.rateMu.RLock()
 	defer g.rateMu.RUnlock()
 	return g.assistRPS
+}
+
+func (g *generator) currentWholesaleRPS() float64 {
+	g.rateMu.RLock()
+	defer g.rateMu.RUnlock()
+	return g.wholesaleRPS
 }
 
 func (g *generator) currentConcurrency() int {
@@ -346,6 +365,149 @@ var assistQuestions = []string{
 }
 
 // ---------------------------------------------------------------------------
+// Wholesale orders
+// ---------------------------------------------------------------------------
+
+// The wholesale channel: B2B customers ordering by the case rather than the
+// unit. It walks exactly the same path as a consumer checkout — same cart, same
+// /api/checkout — and differs only in how much is on the order.
+const (
+	// A wholesale cart is several distinct products, not one product repeated.
+	wholesaleLines = 4
+	// Case quantities. Deliberately constants rather than configuration: the
+	// order size is what makes this traffic wholesale, so it is not something
+	// an operator should be tuning per install.
+	wholesaleMinQty = 100
+	wholesaleMaxQty = 140
+	// Bounds in-flight wholesale orders. They touch more of the graph than a
+	// consumer order, so a slow one must not stall the ticker.
+	wholesaleConcurrency = 2
+)
+
+// runWholesale paces wholesale orders independently of the shop's consumer
+// traffic, for the same reason runAssist does: the weighted mix is read once at
+// startup, so a mix entry could not be changed live, and it would make
+// wholesale volume scale with `scripts/load.sh` instead of staying put.
+//
+// The rate starts at LOAD_WHOLESALE_RPS, which ships at 0, so no wholesale
+// order is placed until scripts/wholesale.sh asks for one.
+func (g *generator) runWholesale(ctx context.Context) {
+	// Same settle as the other loops, so a fresh install's first requests are
+	// not counted as baseline errors.
+	select {
+	case <-time.After(20 * time.Second):
+	case <-ctx.Done():
+		return
+	}
+
+	rng := rand.New(rand.NewSource(time.Now().UnixNano() ^ 0x_b2b))
+	sem := make(chan struct{}, wholesaleConcurrency)
+
+	ticker := time.NewTicker(assistTickInterval(g.currentWholesaleRPS()))
+	defer ticker.Stop()
+	current := g.currentWholesaleRPS()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			rps := g.currentWholesaleRPS()
+			if rps != current {
+				current = rps
+				ticker.Reset(assistTickInterval(rps))
+			}
+			if rps <= 0 {
+				continue
+			}
+
+			select {
+			case sem <- struct{}{}:
+			default:
+				// Every worker is still placing an order. Drop the tick rather
+				// than queueing; the report loop shows the shortfall.
+				continue
+			}
+			// Each order gets its own generator, derived here on the loop
+			// goroutine. math/rand.Rand is not safe for concurrent use, and
+			// wholesaleConcurrency orders can be in flight at once.
+			orderRNG := rand.New(rand.NewSource(rng.Int63()))
+			go func() {
+				defer func() { <-sem }()
+				g.runWholesaleOnce(ctx, orderRNG)
+			}()
+		}
+	}
+}
+
+// runWholesaleOnce places one wholesale order: seed a fresh cart with several
+// case-quantity lines, then check out.
+func (g *generator) runWholesaleOnce(ctx context.Context, rng *rand.Rand) {
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cartID := domain.NewID("cart")
+	for _, productID := range distinctProductIDs(rng, wholesaleLines) {
+		qty := int32(wholesaleMinQty + rng.Intn(wholesaleMaxQty-wholesaleMinQty+1))
+		var cart domain.Cart
+		if err := g.client.PostJSON(callCtx, "/api/cart/"+cartID+"/items", domain.AddToCartRequest{
+			ProductID: productID,
+			Quantity:  qty,
+		}, &cart); err != nil {
+			g.wholesaleFailed.Add(1)
+			slog.Debug("wholesale cart seed failed", slog.Any("err", err))
+			return
+		}
+	}
+
+	var out domain.CheckoutResponse
+	err := g.client.PostJSON(callCtx, "/api/checkout", domain.CheckoutRequest{
+		CartID:       cartID,
+		CustomerID:   fmt.Sprintf("whl-%04d", rng.Intn(200)),
+		CustomerTier: "platinum",
+		Email:        fmt.Sprintf("orders%04d@example.com", rng.Intn(200)),
+		Address: domain.Address{
+			Street:     fmt.Sprintf("%d Depot Way", 100+rng.Intn(900)),
+			City:       "Springfield",
+			Region:     "CA",
+			PostalCode: fmt.Sprintf("9%04d", rng.Intn(10000)),
+			Country:    "US",
+		},
+		CardLastFour: fmt.Sprintf("%04d", rng.Intn(10000)),
+		CardBrand:    "visa",
+	}, &out)
+	if err != nil {
+		g.wholesaleFailed.Add(1)
+		// Debug, not Warn: an error log from the traffic source would become
+		// Causely evidence pointing at web-client rather than at whichever
+		// service actually failed.
+		slog.Debug("wholesale order failed", slog.Any("err", err))
+		return
+	}
+	g.wholesaleCompleted.Add(1)
+}
+
+// distinctProductIDs picks n different products.
+//
+// Distinct matters: cart-service merges repeated lines for the same product, so
+// a duplicate would collapse two case quantities into one line large enough to
+// exceed available stock. The order would then fail the stock check instead of
+// completing, which is a different request entirely.
+func distinctProductIDs(rng *rand.Rand, n int) []string {
+	seen := make(map[string]bool, n)
+	out := make([]string, 0, n)
+	for len(out) < n {
+		id := randomProductID(rng)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
 
@@ -454,6 +616,9 @@ type loadPatch struct {
 	// AssistRPS is the genAI rate, in absolute requests per second, and is
 	// applied live like RPS. See scripts/genai.sh.
 	AssistRPS *float64 `json:"assistRps"`
+	// WholesaleRPS is the wholesale order rate, also absolute and also applied
+	// live. See scripts/wholesale.sh.
+	WholesaleRPS *float64 `json:"wholesaleRps"`
 }
 
 func registerAdminRoutes(d *app.Deps, g *generator) {
@@ -489,6 +654,9 @@ func registerAdminRoutes(d *app.Deps, g *generator) {
 			if patch.AssistRPS != nil && *patch.AssistRPS >= 0 {
 				g.assistRPS = *patch.AssistRPS
 			}
+			if patch.WholesaleRPS != nil && *patch.WholesaleRPS >= 0 {
+				g.wholesaleRPS = *patch.WholesaleRPS
+			}
 			g.rateMu.Unlock()
 
 			// Deliberately Debug, not Warn — same reason as the fault store's
@@ -514,7 +682,7 @@ func registerAdminRoutes(d *app.Deps, g *generator) {
 
 func (g *generator) status() map[string]any {
 	g.rateMu.RLock()
-	rps, concurrency, assistRPS := g.rps, g.concurrency, g.assistRPS
+	rps, concurrency, assistRPS, wholesaleRPS := g.rps, g.concurrency, g.assistRPS, g.wholesaleRPS
 	g.rateMu.RUnlock()
 	return map[string]any{
 		"rps":                  rps,
@@ -525,5 +693,8 @@ func (g *generator) status() map[string]any {
 		"assistRps":            assistRPS,
 		"assistCompleted":      g.assistCompleted.Load(),
 		"assistFailed":         g.assistFailed.Load(),
+		"wholesaleRps":         wholesaleRPS,
+		"wholesaleCompleted":   g.wholesaleCompleted.Load(),
+		"wholesaleFailed":      g.wholesaleFailed.Load(),
 	}
 }

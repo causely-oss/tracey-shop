@@ -293,3 +293,16 @@ h2 { font-size: 17px; margin: 0 0 12px; }
   color: var(--ink-soft);
   font-variant-numeric: tabular-nums;
 }
+
+.qty-presets { display: flex; gap: 8px; margin: 8px 0 4px; flex-wrap: wrap; }
+.chip {
+  background: var(--card, #fff);
+  border: 1px solid var(--line, #d8d8e0);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 13px;
+  color: inherit;
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--accent, #4a4ae0); }

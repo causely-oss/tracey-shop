@@ -69,6 +69,11 @@ spec:
             # cannot multiply spend against a real LLM provider. 0 means off.
             - name: LOAD_ASSIST_RPS
               value: {{ default 0 .Values.loadgen.assistRPS | quote }}
+            # Wholesale (case-quantity) orders, also absolute and also
+            # independent of LOAD_RPS. 0 means none; raise it live with
+            # scripts/wholesale.sh.
+            - name: LOAD_WHOLESALE_RPS
+              value: {{ default 0 .Values.loadgen.wholesaleRPS | quote }}
             {{- include "tracey-shop.commonEnv" (dict "root" .) | nindent 12 }}
           ports:
             - name: admin

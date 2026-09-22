@@ -53,3 +53,4 @@ loadgen:
   rps: 40
   concurrency: 24
   assistRPS: 0.5
+  wholesaleRPS: 0

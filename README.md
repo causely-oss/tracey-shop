@@ -149,12 +149,23 @@ never multiplies spend against a real LLM provider. It starts at 0:
 ./scripts/genai.sh 0       # off
 ```
 
+Wholesale orders are paced the same way, and also start at 0. A wholesale order
+is several distinct products at case quantities, placed against the same
+`/api/checkout` endpoint a consumer order uses — the shop's default traffic is
+consumer traffic, so the channel is idle until you ask for it:
+
+```bash
+./scripts/wholesale.sh 0.5 # ~1 wholesale order every 2s
+./scripts/wholesale.sh 0   # off
+```
+
 Or set the defaults at install time:
 
 ```yaml
 loadgen:
   rps: 20
   concurrency: 16
+  wholesaleRPS: 0          # case-quantity B2B orders, absolute like assistRPS
   mix:                     # relative weights
     browse: 50
     search: 20
@@ -337,7 +348,7 @@ internal/
   services/<role>/             one package per service
 proto/shop/v1/shop.proto       gRPC contracts (generated code checked in)
 deploy/tracey-shop/            Helm chart
-scripts/                       kind-up, scenario, load, genai, verify-traces
+scripts/                       kind-up, scenario, load, genai, wholesale, verify-traces
 ```
 
 Adding a service is one values block plus one package registered in `cmd/shopd/main.go`.

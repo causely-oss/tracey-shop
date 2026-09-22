@@ -238,6 +238,10 @@ scenarios: ## List the fault scenarios
 genai: ## Show or set the genAI request rate, e.g. `make genai RPS=0.5` (0 = off)
 	./scripts/genai.sh $(RPS)
 
+.PHONY: wholesale
+wholesale: ## Show or set the wholesale order rate, e.g. `make wholesale RPS=0.5` (0 = off)
+	./scripts/wholesale.sh $(RPS)
+
 .PHONY: port-forward
 port-forward: ## Expose the storefront on localhost:8080
 	kubectl -n $(NAMESPACE) port-forward svc/$(RELEASE)-storefront-bff 8080:8080
