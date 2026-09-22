@@ -35,6 +35,23 @@ func TestNoPostingExceedsTheLineCap(t *testing.T) {
 	}
 }
 
+// TestPostingsSumToSettlement is the invariant RecordTransaction checks
+// before opening a transaction: the split lines must sum to exactly the
+// authorized amount, or the journal is refused as unbalanced. This guards
+// against regressions like the one where the final (partial) line was
+// rounded up to maxPostingCents instead of carrying the remainder.
+func TestPostingsSumToSettlement(t *testing.T) {
+	for _, cents := range []int64{1, maxPostingCents, maxPostingCents + 1, 540_160, 13_946_240, 3 * maxPostingCents} {
+		var sum int64
+		for _, line := range splitPostings(cents) {
+			sum += line
+		}
+		if sum != cents {
+			t.Errorf("splitPostings(%d) lines sum to %d, want %d", cents, sum, cents)
+		}
+	}
+}
+
 // TestLineCapIsAboveConsumerOrderRange pins the cap against the catalogue.
 //
 // A consumer cart holds at most two lines of two units, and the catalogue tops

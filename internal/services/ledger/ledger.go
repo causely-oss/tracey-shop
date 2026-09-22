@@ -51,6 +51,10 @@ func splitPostings(cents int64) []int64 {
 	}
 	lines := make([]int64, 0, cents/maxPostingCents+1)
 	for remaining := cents; remaining > 0; remaining -= maxPostingCents {
+		if remaining < maxPostingCents {
+			lines = append(lines, remaining)
+			break
+		}
 		lines = append(lines, maxPostingCents)
 	}
 	return lines
