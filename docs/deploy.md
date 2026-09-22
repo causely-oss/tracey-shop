@@ -142,6 +142,49 @@ To make it durable, uncomment the `persistence` blocks in `values-cloud.yaml` an
 `allowVolumeExpansion` on it first — several common defaults are `false`, and you cannot grow the
 volume later, so size it correctly up front.
 
+## Also sending traces to Datadog
+
+`values-datadog.yaml` fans the traces pipeline out to a second destination so Datadog and Causely
+see **the same spans**, out of the same collector, after the same processors. That matters when the
+two are being compared: the comparison should be about what each platform does with the telemetry,
+not about who got better input.
+
+```
+helm upgrade --install tracey-shop deploy/tracey-shop \
+  -n tracey-shop --create-namespace \
+  -f deploy/tracey-shop/values-cloud.yaml \
+  -f deploy/tracey-shop/values-datadog.yaml \
+  --set otelCollector.exporter.endpoint=mediator.<namespace>:4317
+```
+
+Traces go to the node Datadog Agent's OTLP receiver rather than to the Datadog intake directly, so
+the Agent supplies the API key, the host and container tags, and the APM stats — nothing in this
+chart needs a Datadog credential. The cluster must have that receiver enabled on its `DatadogAgent`:
+
+```yaml
+spec:
+  features:
+    otlp:
+      receiver:
+        protocols:
+          grpc:
+            enabled: true
+            endpoint: "0.0.0.0:4317"
+```
+
+The Datadog Operator then adds port 4317 to the existing `datadog-agent` Service on its own.
+
+| Thing to know | Why it matters |
+|---|---|
+| Only traces are fanned out | Datadog already collects infrastructure metrics through its own Agent; exporting OTLP metrics too would double-count them |
+| The Agent Service is `internalTrafficPolicy: Local` | the collector is served by the Agent pod **on its own node**, so a node with no Ready Agent pod blackholes rather than failing over — the `sending_queue` is what absorbs an Agent restart |
+| Go services, so no `dd-trace` | Datadog's single-step instrumentation covers Java, Python, Ruby, Node.js, .NET and PHP only; Go needs Orchestrion at build time. OTLP sidesteps that entirely |
+| `apm_config.additional_endpoints` applies here too | it is evaluated at the Agent's trace writer, *after* OTLP is converted — so if the Agent also dual-ships to a Causely mediator, these spans go there as well and that mediator gets a second copy |
+
+Verify with `kubectl -n tracey-shop logs deploy/tracey-shop-otel-collector`, or read the collector's
+own counters on `:8888` — `otelcol_exporter_sent_spans` should show equal counts per exporter and
+`otelcol_exporter_send_failed_spans` should be zero.
+
 ## Cluster requirements
 
 | Requirement | What to check |
