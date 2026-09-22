@@ -1,0 +1,52 @@
+# Also send traces to Datadog, alongside Causely.
+#
+# Layered on top of values-cloud.yaml. The point is parity: Datadog and Causely
+# see the same spans, out of the same collector, after the same processors — so
+# a comparison between the two is about what each platform does with the
+# telemetry, not about who got better input.
+#
+# This fans the traces pipeline out to the node Datadog Agent's OTLP receiver
+# rather than to the Datadog intake directly, so the Agent supplies the API key,
+# the host and container tags, and the APM stats. The cluster therefore needs
+# the Agent's OTLP gRPC receiver turned on:
+#
+#   spec:
+#     features:
+#       otlp:
+#         receiver:
+#           protocols:
+#             grpc:
+#               enabled: true
+#               endpoint: "0.0.0.0:4317"
+#
+# Enabling it makes the Datadog Operator add port 4317 to the existing
+# `datadog-agent` Service by itself. That Service is internalTrafficPolicy:
+# Local, so the collector is served by the Agent pod on its own node — which
+# also means a node with no Ready Agent pod blackholes rather than failing over.
+# The sending_queue below is what absorbs an Agent restart.
+#
+# Only the traces pipeline is fanned out. Datadog already collects
+# infrastructure metrics through its own Agent, so exporting OTLP metrics here
+# would double-count them.
+#
+# Usage:
+#   helm upgrade --install tracey-shop deploy/tracey-shop \
+#     -n tracey-shop --create-namespace \
+#     -f deploy/tracey-shop/values-cloud.yaml \
+#     -f deploy/tracey-shop/values-datadog.yaml \
+#     --set otelCollector.exporter.endpoint=mediator.<namespace>:4317
+
+otelCollector:
+  extraExporters:
+    otlp/datadog:
+      endpoint: datadog-agent.datadog.svc.cluster.local:4317
+      tls:
+        insecure: true
+      retry_on_failure:
+        enabled: true
+        initial_interval: 5s
+        max_elapsed_time: 60s
+      sending_queue:
+        enabled: true
+        num_consumers: 4
+        queue_size: 1000
