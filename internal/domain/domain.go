@@ -139,6 +139,14 @@ type PartnerResponse struct {
 	Code      string `json:"code"`
 }
 
+// PayLaterOffer is the payment provider's "Pay in 4" financing offer shown on a
+// product page. Absent when the provider could not be reached.
+type PayLaterOffer struct {
+	Provider     string `json:"provider"`
+	Installments int    `json:"installments"`
+	Installment  Money  `json:"installment"`
+}
+
 // AssistRequest is a shopper's question for ai-assistant.
 type AssistRequest struct {
 	Question  string `json:"question"`

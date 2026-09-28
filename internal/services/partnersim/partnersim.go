@@ -41,12 +41,13 @@ import (
 // answers with. The provider-shaped paths are what the shipped callers use; the
 // short ones are kept so an older caller image still works against a new sim.
 var routes = map[string]string{
-	"/v2/payments/authorizations": "auth",
-	"/v2/shipments":               "trk",
-	"/v3/mail/send":               "msg",
-	"/charges":                    "auth",
-	"/shipments":                  "trk",
-	"/messages":                   "msg",
+	"/v2/payments/authorizations":             "auth",
+	"/v1/credit/calculated-financing-options": "fin",
+	"/v2/shipments":                           "trk",
+	"/v3/mail/send":                           "msg",
+	"/charges":                                "auth",
+	"/shipments":                              "trk",
+	"/messages":                               "msg",
 }
 
 // Run starts the partner simulator.

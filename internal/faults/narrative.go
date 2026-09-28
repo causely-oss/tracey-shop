@@ -145,6 +145,7 @@ var narratives = map[string]Narrative{
 	"storefront-bff": {
 		Error:             "request failed at the storefront edge",
 		DependencyTimeout: "downstream call exceeded deadline, returning error to client",
+		ProviderFailure:   "payment provider unavailable, Pay in 4 offer omitted from product page",
 	},
 	"shipping-quote": {
 		Error:             "carrier rate lookup failed",

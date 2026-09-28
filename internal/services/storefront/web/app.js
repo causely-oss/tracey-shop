@@ -319,7 +319,11 @@ async function viewProduct(id) {
   renderCategories('');
   spinner('Loading product…');
 
-  const p = await getProduct(id);
+  // Fetched fresh, not from productCache: the "Pay in 4" offer comes from the
+  // payment provider and disappears while it is unavailable.
+  const out = await api('GET', `/api/products/${encodeURIComponent(id)}`);
+  const p = out && out.product;
+  const offer = out && out.payLater;
   if (!p) {
     view.innerHTML = `<h1>Product not found</h1><a class="btn" href="/" data-nav>Back to the store</a>`;
     return;
@@ -334,6 +338,8 @@ async function viewProduct(id) {
           <span class="card-cat">${esc(p.category)} · ${esc(p.sku)}</span>
         </div>
         <div class="price-lg">${money(p.price)}</div>
+        ${offer ? `<p class="muted pay-later">or ${offer.installments} interest-free payments of
+          ${money(offer.installment)} with PayPal</p>` : ''}
         <p class="muted">${p.available > 0
           ? `${p.available} in stock, ships in 3–5 business days.`
           : `<span class="stock-out">Currently out of stock.</span>`}</p>
