@@ -61,6 +61,15 @@ type Config struct {
 	CarrierURL  string
 	EmailURL    string
 
+	// The public third-party APIs the partner sims answer for, e.g.
+	// https://api.paypal.com. When set, callers address that URL — it is what
+	// appears on their CLIENT spans, so Causely models the provider as an
+	// External service — while requests are delivered to the matching *URL
+	// above. Empty means call the sim under its own in-cluster name.
+	StripePublicURL  string
+	CarrierPublicURL string
+	EmailPublicURL   string
+
 	// Client behaviour
 	RequestTimeout time.Duration
 
@@ -172,9 +181,13 @@ func Load() (*Config, error) {
 
 		CartURL:     env("CART_URL", "http://cart-service:8081"),
 		ShippingURL: env("SHIPPING_URL", "http://shipping-quote:8082"),
-		StripeURL:   env("STRIPE_URL", "http://stripe-sim:8086"),
-		CarrierURL:  env("CARRIER_URL", "http://carrier-sim:8085"),
-		EmailURL:    env("EMAIL_URL", "http://email-sim:8087"),
+		StripeURL:   env("STRIPE_URL", "http://stripe-sim:18086"),
+		CarrierURL:  env("CARRIER_URL", "http://carrier-sim:18085"),
+		EmailURL:    env("EMAIL_URL", "http://email-sim:18087"),
+
+		StripePublicURL:  env("STRIPE_PUBLIC_URL", ""),
+		CarrierPublicURL: env("CARRIER_PUBLIC_URL", ""),
+		EmailPublicURL:   env("EMAIL_PUBLIC_URL", ""),
 
 		RequestTimeout: envDuration("REQUEST_TIMEOUT", 5*time.Second),
 

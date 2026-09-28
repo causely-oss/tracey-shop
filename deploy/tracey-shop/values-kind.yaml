@@ -82,23 +82,29 @@ services:
     enabled: true
     replicas: 1
     protocol: http
-    port: 8086
+    port: 18086
+    adminPort: 18090
     role: partner-sim
-    partnerName: acme-payments
+    partnerName: paypal
+    publicURL: https://api.paypal.com
     partnerLatency: 35ms
   carrier-sim:
     enabled: true
     replicas: 1
     protocol: http
-    port: 8085
+    port: 18085
+    adminPort: 18090
     role: partner-sim
-    partnerName: swiftship
+    partnerName: easypost
+    publicURL: https://api.easypost.com
     partnerLatency: 45ms
   email-sim:
     enabled: true
     replicas: 1
     protocol: http
-    port: 8087
+    port: 18087
+    adminPort: 18090
     role: partner-sim
-    partnerName: mailwing
+    partnerName: sendgrid
+    publicURL: https://api.sendgrid.com
     partnerLatency: 20ms

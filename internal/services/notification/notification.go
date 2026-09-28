@@ -14,12 +14,13 @@ import (
 	"github.com/causely-oss/tracey-shop/internal/app"
 	"github.com/causely-oss/tracey-shop/internal/domain"
 	"github.com/causely-oss/tracey-shop/internal/obs"
+	"github.com/causely-oss/tracey-shop/internal/transport/httpx"
 	"github.com/causely-oss/tracey-shop/internal/transport/kafkax"
 )
 
 // Run starts the notification-worker consumer loop.
 func Run(ctx context.Context, d *app.Deps) error {
-	email := d.HTTPClient(d.Cfg.EmailURL)
+	email := d.PartnerClient(d.Cfg.EmailPublicURL, d.Cfg.EmailURL)
 
 	handler := func(ctx context.Context, key string, body []byte) error {
 		var event domain.NotificationEvent
@@ -35,7 +36,7 @@ func Run(ctx context.Context, d *app.Deps) error {
 		}
 
 		var sent domain.PartnerResponse
-		if err := email.PostJSON(ctx, "/messages", domain.PartnerRequest{
+		if err := email.PostJSON(ctx, "/v3/mail/send", domain.PartnerRequest{
 			Reference: event.OrderID,
 			To:        recipient,
 			Metadata: map[string]string{
@@ -43,6 +44,9 @@ func Run(ctx context.Context, d *app.Deps) error {
 				"decision": event.Decision,
 			},
 		}, &sent); err != nil {
+			if code, ok := httpx.ServerErrorStatus(err); ok {
+				d.Faults.LogProviderFailure(email.Host(), code)
+			}
 			return fmt.Errorf("send notification for %s: %w", event.OrderID, err)
 		}
 

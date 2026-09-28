@@ -40,7 +40,7 @@ func Run(ctx context.Context, d *app.Deps) error {
 	srv := grpcx.NewServer(d.Cfg.GRPCAddr, d.Faults)
 	shopv1.RegisterPaymentServiceServer(srv.Raw(), &server{
 		deps:      d,
-		processor: d.HTTPClient(d.Cfg.StripeURL),
+		processor: d.PartnerClient(d.Cfg.StripePublicURL, d.Cfg.StripeURL),
 		ledger:    ledger,
 	})
 
@@ -61,7 +61,7 @@ func (s *server) Authorize(ctx context.Context, req *shopv1.AuthorizeRequest) (*
 
 	// 1. Charge the external processor over HTTP.
 	var charge domain.PartnerResponse
-	err := s.processor.PostJSON(ctx, "/charges", domain.PartnerRequest{
+	err := s.processor.PostJSON(ctx, "/v2/payments/authorizations", domain.PartnerRequest{
 		Reference: transactionID,
 		AmountC:   amount.Cents,
 		Currency:  amount.Currency,
@@ -73,6 +73,13 @@ func (s *server) Authorize(ctx context.Context, req *shopv1.AuthorizeRequest) (*
 		},
 	}, &charge)
 	if err != nil {
+		// The processor being down is not payment-gw failing: say so in the log
+		// Causely reads, and answer UNAVAILABLE, the code for "a dependency is
+		// down, retry later", rather than letting grpc-go default to UNKNOWN.
+		if code, ok := httpx.ServerErrorStatus(err); ok {
+			s.deps.Faults.LogProviderFailure(s.processor.Host(), code)
+			return nil, status.Error(codes.Unavailable, "payment processor unavailable")
+		}
 		return nil, fmt.Errorf("processor charge: %w", err)
 	}
 
