@@ -18,6 +18,8 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-tracey-shop}"
 RELEASE="${RELEASE:-tracey-shop}"
+# Fallback only: each pod's admin port is read from its "admin" containerPort,
+# because the third-party stand-ins use a different one (see values.yaml).
 ADMIN_PORT="${ADMIN_PORT:-8090}"
 LOCAL_PORT="${LOCAL_PORT:-18090}"
 
@@ -116,6 +118,23 @@ scenario_spec() {
       # status is ignored. See docs/genai.md.
       echo 'model-gateway={"errorRate":0.5}'
       ;;
+    payment-provider-outage)
+      # PayPal (api.paypal.com) answers 503 on half of all authorisations.
+      #
+      # The fault is on the in-cluster stand-in, but nothing Causely sees says
+      # so: callers address api.paypal.com, the stand-in emits no spans and no
+      # logs, so the provider is an External service and the only evidence is
+      # the 503s on payment-gw's CLIENT spans. payment-gw, checkout-api and
+      # storefront-bff all error; Causely should exonerate all three and name
+      # api.paypal.com.
+      echo 'stripe-sim={"errorRate":0.5}'
+      ;;
+    email-provider-errors)
+      # SendGrid (api.sendgrid.com) answers 503 on 60% of sends. Asynchronous:
+      # the shopper sees nothing, and notification-worker is the only service
+      # of ours that notices. Causely should name api.sendgrid.com, not it.
+      echo 'email-sim={"errorRate":0.6}'
+      ;;
     *)
       return 1
       ;;
@@ -135,6 +154,8 @@ SCENARIOS=(
   risk-crash
   checkout-latency
   ai-model-malfunction
+  payment-provider-outage
+  email-provider-errors
 )
 
 scenario_description() {
@@ -151,6 +172,8 @@ scenario_description() {
     risk-crash)              echo "risk-model panics on 2% of requests    -> expect root cause: risk-model (CrashLoopBackOff)" ;;
     checkout-latency)        echo "checkout-api adds its own latency      -> control case: cause == symptom" ;;
     ai-model-malfunction)    echo "LLM provider fails 50% of inferences   -> expect root cause: AIModel Malfunction on mock-small-1/chat" ;;
+    payment-provider-outage) echo "api.paypal.com fails 50% of auths      -> expect root cause: api.paypal.com (External), not payment-gw" ;;
+    email-provider-errors)   echo "api.sendgrid.com fails 60% of sends    -> expect root cause: api.sendgrid.com (External), not notification-worker" ;;
   esac
 }
 
@@ -192,7 +215,12 @@ post_admin_pod() {
   local service="$1" pod="$2" method="$3" path="$4" body="${5:-}"
   local port="$LOCAL_PORT"
 
-  kubectl -n "$NAMESPACE" port-forward "pod/${pod}" "${port}:${ADMIN_PORT}" \
+  local admin_port
+  admin_port="$(kubectl -n "$NAMESPACE" get pod "$pod" \
+    -o jsonpath='{.spec.containers[0].ports[?(@.name=="admin")].containerPort}' 2>/dev/null)"
+  admin_port="${admin_port:-$ADMIN_PORT}"
+
+  kubectl -n "$NAMESPACE" port-forward "pod/${pod}" "${port}:${admin_port}" \
     >/dev/null 2>&1 &
   local pf_pid=$!
 

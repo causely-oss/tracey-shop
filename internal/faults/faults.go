@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -102,6 +103,8 @@ type Store struct {
 	service   string
 	narrative Narrative
 	limiter   *logLimiter
+	// quiet suppresses every narrative log line; see Quiet.
+	quiet atomic.Bool
 }
 
 // NewStore returns an empty store — no faults active. service should be the
@@ -114,6 +117,15 @@ func NewStore(service string) *Store {
 		limiter:   newLogLimiter(),
 	}
 }
+
+// Quiet stops this store from logging any narrative line, while every fault
+// still takes effect.
+//
+// For the third-party stand-ins. Their failures must be visible only the way a
+// real provider's are — through what the caller observes — because an ERROR
+// line from a pod in your own cluster is evidence Causely would weigh against
+// that pod, and a real provider's logs are never available to you.
+func (s *Store) Quiet() { s.quiet.Store(true) }
 
 // Get returns the current spec.
 func (s *Store) Get() Spec {
@@ -283,6 +295,16 @@ func (s *Store) LogDependencyTimeout(dependency string, deadline time.Duration) 
 	s.emit(slog.LevelError, s.narrative.DependencyTimeout,
 		slog.String("dependency", dependency),
 		durationAttr("deadline_ms", deadline))
+}
+
+// LogProviderFailure records that a third-party API answered with a server
+// error. Called by the services that depend on one, whether or not any fault is
+// set on them — the failure is the provider's, which is the point.
+func (s *Store) LogProviderFailure(provider string, httpStatus int) {
+	s.emit(slog.LevelError, s.narrative.ProviderFailure,
+		slog.String("provider_host", provider),
+		slog.Int("http_status", httpStatus),
+		slog.Bool("retryable", true))
 }
 
 // SlowQuery returns how long a database call should be made to sleep.

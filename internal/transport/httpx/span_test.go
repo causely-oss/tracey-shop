@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -212,5 +213,65 @@ func TestTraceContextPropagatesToServer(t *testing.T) {
 	}
 	if serverSpan.Parent().SpanID() != clientSpan.SpanContext().SpanID() {
 		t.Error("server span is not a child of the client span")
+	}
+}
+
+// TestDialToPresentsThePublicProvider covers the external-provider stand-ins.
+// Causely only creates an External service when the CLIENT span names a
+// hostname nothing in the cluster claims, and when no SERVER span is ever
+// parented to that CLIENT span — otherwise it bridges the hostname back to the
+// in-cluster Service. So three things must hold at once: the span says
+// api.paypal.com, the request really reaches the stand-in, and the stand-in
+// never receives trace context.
+func TestDialToPresentsThePublicProvider(t *testing.T) {
+	rec := setupRecorder(t)
+
+	var gotHost, gotPath, gotTraceparent string
+	standIn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost, gotPath = r.Host, r.URL.Path
+		gotTraceparent = r.Header.Get("traceparent")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"name":"SERVICE_UNAVAILABLE"}`))
+	}))
+	defer standIn.Close()
+
+	client := NewClient("https://api.paypal.com", 5*time.Second, faults.NewStore("test-svc"),
+		WithDialTo(standIn.URL))
+
+	err := client.PostJSON(context.Background(), "/v2/payments/authorizations", map[string]int{"amount": 1}, nil)
+
+	var se *StatusError
+	if !errors.As(err, &se) || se.Status != http.StatusServiceUnavailable {
+		t.Fatalf("PostJSON err = %v, want a 503 StatusError", err)
+	}
+	if se.URL != "https://api.paypal.com/v2/payments/authorizations" {
+		t.Errorf("StatusError.URL = %q, want the public URL", se.URL)
+	}
+	if gotPath != "/v2/payments/authorizations" {
+		t.Errorf("stand-in saw path %q", gotPath)
+	}
+	if gotHost != "api.paypal.com" {
+		t.Errorf("stand-in saw Host %q, want api.paypal.com", gotHost)
+	}
+	if gotTraceparent != "" {
+		t.Errorf("stand-in received traceparent %q; a third party must never get trace context", gotTraceparent)
+	}
+
+	span := findSpan(t, rec, trace.SpanKindClient)
+	want := map[string]string{
+		"server.address": "api.paypal.com",
+		"url.full":       "https://api.paypal.com/v2/payments/authorizations",
+	}
+	for k, v := range want {
+		got, ok := attrOf(span, k)
+		if !ok || got.AsString() != v {
+			t.Errorf("%s = %q (present=%v), want %q", k, got.AsString(), ok, v)
+		}
+	}
+	if got, _ := attrOf(span, "server.port"); got.AsInt64() != 443 {
+		t.Errorf("server.port = %d, want 443", got.AsInt64())
+	}
+	if got, _ := attrOf(span, "http.response.status_code"); got.AsInt64() != 503 {
+		t.Errorf("http.response.status_code = %d, want 503 — this is what Causely counts as the provider's error", got.AsInt64())
 	}
 }

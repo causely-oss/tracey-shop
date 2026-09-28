@@ -211,3 +211,21 @@ func TestInjectedErrorTextNeverRevealsTheInjection(t *testing.T) {
 		}
 	}
 }
+
+// TestProviderFailureNamesTheOperation covers the callers of the third-party
+// APIs. Each line must say what the caller failed to do because of the
+// provider, so it reads as the provider breaking the caller's operation rather
+// than as the caller's own failure. That is what lets Causely exonerate it.
+func TestProviderFailureNamesTheOperation(t *testing.T) {
+	cases := map[string]string{
+		"payment-gw":          "payment processor",
+		"shipping-quote":      "carrier",
+		"notification-worker": "email provider",
+	}
+	for service, want := range cases {
+		got := narrativeFor(service).ProviderFailure
+		if !strings.Contains(strings.ToLower(got), want) {
+			t.Errorf("narrativeFor(%q).ProviderFailure = %q, expected it to mention %q", service, got, want)
+		}
+	}
+}

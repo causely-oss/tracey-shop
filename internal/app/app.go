@@ -108,6 +108,19 @@ func (d *Deps) HTTPClient(baseURL string) *httpx.Client {
 	return httpx.NewClient(baseURL, d.Cfg.RequestTimeout, d.Faults)
 }
 
+// PartnerClient builds a client for a third-party API.
+//
+// With a publicURL the client addresses the provider's public API — that is
+// what its CLIENT spans record, so Causely sees an External service — and
+// delivers to dialURL, the in-cluster stand-in. Without one it simply calls
+// dialURL, as HTTPClient does.
+func (d *Deps) PartnerClient(publicURL, dialURL string) *httpx.Client {
+	if publicURL == "" {
+		return d.HTTPClient(dialURL)
+	}
+	return httpx.NewClient(publicURL, d.Cfg.RequestTimeout, d.Faults, httpx.WithDialTo(dialURL))
+}
+
 // HTTPClientWithTimeout is HTTPClient for a dependency whose latency profile
 // differs from the rest of the shop.
 //

@@ -22,6 +22,7 @@ provider — the same "enabled and not external" shape the bundled backends use.
 {{- end -}}
 {{- if $enabled }}
 {{- $resources := default $root.Values.defaultResources $svc.resources }}
+{{- $adminPort := $svc.adminPort | default $root.Values.adminPort }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -112,13 +113,13 @@ spec:
                   name: {{ $apiKey.secretName | quote }}
                   key: {{ default "apiKey" $apiKey.secretKey | quote }}
             {{- end }}
-            {{- include "tracey-shop.commonEnv" (dict "root" $root) | nindent 12 }}
+            {{- include "tracey-shop.commonEnv" (dict "root" $root "adminPort" $adminPort) | nindent 12 }}
             {{- with $svc.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           ports:
             - name: admin
-              containerPort: {{ int $root.Values.adminPort }}
+              containerPort: {{ int $adminPort }}
             {{- if ne (default "http" $svc.protocol) "none" }}
             - name: {{ if eq $svc.protocol "grpc" }}grpc{{ else }}http{{ end }}
               containerPort: {{ int $svc.port }}

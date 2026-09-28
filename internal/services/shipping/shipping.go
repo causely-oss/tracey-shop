@@ -25,7 +25,7 @@ const (
 
 // Run starts the shipping HTTP server.
 func Run(ctx context.Context, d *app.Deps) error {
-	carrier := d.HTTPClient(d.Cfg.CarrierURL)
+	carrier := d.PartnerClient(d.Cfg.CarrierPublicURL, d.Cfg.CarrierURL)
 	s := httpx.NewServer(d.Cfg.ServiceName, d.Cfg.HTTPAddr, d.Faults)
 
 	s.Route("POST /quotes", func(ctx context.Context, r *http.Request) (any, error) {
@@ -46,7 +46,7 @@ func Run(ctx context.Context, d *app.Deps) error {
 
 		// Book the shipment with the carrier to get a tracking number.
 		var booking domain.PartnerResponse
-		if err := carrier.PostJSON(ctx, "/shipments", domain.PartnerRequest{
+		if err := carrier.PostJSON(ctx, "/v2/shipments", domain.PartnerRequest{
 			Reference: in.OrderID,
 			AmountC:   cost,
 			Currency:  "USD",
@@ -55,6 +55,9 @@ func Run(ctx context.Context, d *app.Deps) error {
 				"country":    in.Address.Country,
 			},
 		}, &booking); err != nil {
+			if code, ok := httpx.ServerErrorStatus(err); ok {
+				d.Faults.LogProviderFailure(carrier.Host(), code)
+			}
 			return nil, fmt.Errorf("carrier booking: %w", err)
 		}
 

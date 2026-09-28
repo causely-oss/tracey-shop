@@ -573,13 +573,24 @@ services:
     role: llm-sim
 
   # --- simulated third parties -------------------------------------------
+  # Each sim stands in for the public API in its publicURL. Callers put that URL
+  # on their CLIENT spans and deliver to the sim, so Causely shows api.paypal.com
+  # etc. as External services, and a sim fault reads as the provider failing.
+  # Set publicURL to "" to call the sim under its own in-cluster name instead.
+  #
+  # Both ports sit above 10000 on purpose. The Causely agent's Beyla instruments
+  # any process with an open port in 80,443,2000-10000, and its spans would tie
+  # the public hostname back to this in-cluster pod. See docs/causely-setup.md,
+  # "External services".
   stripe-sim:
     enabled: true
     replicas: 1
     protocol: http
-    port: 8086
+    port: 18086
+    adminPort: 18090
     role: partner-sim
-    partnerName: acme-payments
+    partnerName: paypal
+    publicURL: https://api.paypal.com
     # Third parties are never instant; this shapes the latency graph.
     partnerLatency: 35ms
 
@@ -587,16 +598,20 @@ services:
     enabled: true
     replicas: 1
     protocol: http
-    port: 8085
+    port: 18085
+    adminPort: 18090
     role: partner-sim
-    partnerName: swiftship
+    partnerName: easypost
+    publicURL: https://api.easypost.com
     partnerLatency: 45ms
 
   email-sim:
     enabled: true
     replicas: 1
     protocol: http
-    port: 8087
+    port: 18087
+    adminPort: 18090
     role: partner-sim
-    partnerName: mailwing
+    partnerName: sendgrid
+    publicURL: https://api.sendgrid.com
     partnerLatency: 20ms

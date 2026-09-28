@@ -108,6 +108,7 @@ belt-and-braces copy carried by the SDK itself.
 */}}
 {{- define "tracey-shop.commonEnv" -}}
 {{- $root := .root -}}
+{{- $adminPort := .adminPort | default $root.Values.adminPort -}}
 {{- $fullname := include "tracey-shop.fullname" $root -}}
 {{- $svcs := $root.Values.services -}}
 - name: POD_NAME
@@ -209,7 +210,7 @@ the bundled mock.
 - name: GENAI_GATEWAY_OUTPUT_TOKENS
   value: {{ $gateway.outputTokens | default "" | quote }}
 - name: ADMIN_ADDR
-  value: {{ printf ":%d" (int $root.Values.adminPort) | quote }}
+  value: {{ printf ":%d" (int $adminPort) | quote }}
 - name: OTEL_EXPORTER_OTLP_ENDPOINT
   value: {{ include "tracey-shop.otlpEndpoint" $root | quote }}
 - name: OTEL_TRACES_SAMPLER_RATIO
@@ -259,6 +260,17 @@ one namespace makes every dependency edge resolvable.
   value: {{ printf "http://%s-carrier-sim:%d" $fullname (int (index $svcs "carrier-sim").port) | quote }}
 - name: EMAIL_URL
   value: {{ printf "http://%s-email-sim:%d" $fullname (int (index $svcs "email-sim").port) | quote }}
+{{- /*
+The public API each sim answers for. Callers put this URL on their CLIENT spans,
+so Causely shows the provider as an External service, and deliver to the *_URL
+above. See docs/causely-setup.md, "External services".
+*/}}
+- name: STRIPE_PUBLIC_URL
+  value: {{ (index $svcs "stripe-sim").publicURL | default "" | quote }}
+- name: CARRIER_PUBLIC_URL
+  value: {{ (index $svcs "carrier-sim").publicURL | default "" | quote }}
+- name: EMAIL_PUBLIC_URL
+  value: {{ (index $svcs "email-sim").publicURL | default "" | quote }}
 - name: AI_ASSIST_URL
   value: {{ printf "http://%s-ai-assistant:%d" $fullname (int (index $svcs "ai-assistant").port) | quote }}
 {{- end -}}

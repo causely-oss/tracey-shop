@@ -167,7 +167,7 @@ SERVICES=(
   storefront-bff catalog-api cart-service checkout-api
   inventory-svc pricing-engine payment-gw shipping-quote
   ledger-svc fraud-detector risk-model notification-worker
-  stripe-sim carrier-sim email-sim web-client
+  web-client
 )
 # Only emit spans while genAI traffic is running (scripts/genai.sh), so they are
 # checked in section 9 rather than being required here.
@@ -284,6 +284,29 @@ elif has 'rpc.grpc.status_code'; then
 else
   bad "no gRPC status attribute — gRPC error rates will be understated"
 fi
+
+echo
+log "5b. Third-party APIs must look external"
+
+# Causely models a third party as an External service only when a CLIENT span
+# names a hostname nothing in the cluster claims, and when nothing in the
+# cluster ever emits a SERVER span beneath it. So the callers must name the
+# public API, and the in-cluster stand-ins must stay dark. See
+# docs/causely-setup.md, "External services".
+for host in api.paypal.com api.easypost.com api.sendgrid.com; do
+  if has "server.address: Str(${host})"; then
+    ok "CLIENT spans name ${host}"
+  else
+    bad "no CLIENT span names ${host} — check the sims' publicURL in values.yaml"
+  fi
+done
+for sim in stripe-sim carrier-sim email-sim; do
+  if has "service.name: Str($sim)"; then
+    bad "$sim is emitting spans — Causely will tie its provider hostname back to the in-cluster pod"
+  else
+    ok "$sim emits no spans, as a real third party would not"
+  fi
+done
 
 echo
 log "6. Database dependencies"
