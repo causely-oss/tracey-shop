@@ -203,6 +203,8 @@ prerequisite for a credible demo, since Causely should find nothing until you br
 | `risk-crash` | risk-model panics on 2% | risk-model, CrashLoopBackOff |
 | `checkout-latency` | checkout-api's own latency | control case: cause and symptom are the same service |
 | `ai-model-malfunction` | LLM provider fails 50% of inferences | **AIModel Malfunction** on `mock-small-1/chat` — the failing entity is a model, not a service |
+| `payment-provider-outage` | api.paypal.com answers 503 on 50% of authorisations | **Service Malfunction** on `api.paypal.com` (External) — payment-gw, checkout-api and storefront-bff are exonerated |
+| `email-provider-errors` | api.sendgrid.com answers 503 on 60% of sends | **Service Malfunction** on `api.sendgrid.com` (External), not notification-worker |
 
 Each scenario also emits a **matching WARN/ERROR log line**, because Causely builds its root-cause
 *description* from container logs, not only from metric symptoms — without one the description is
