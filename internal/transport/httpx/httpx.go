@@ -234,7 +234,16 @@ func NewClient(baseURL string, timeout time.Duration, store *faults.Store, opts 
 	// onto whatever recording span the caller put in the context.
 	var next http.RoundTripper = base
 	if o.dialTo != "" {
-		next = newRerouter(o.dialTo, base)
+		rr := newRerouter(o.dialTo, base)
+		// Redirect the socket, not the request. The URL keeps the public host
+		// all the way down, so an eBPF instrumenter hooking net/http (the
+		// Causely agent's Beyla does) also records api.paypal.com rather than
+		// the stand-in's in-cluster name.
+		dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+		base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, rr.addr)
+		}
+		next = rr
 	}
 
 	var rt http.RoundTripper = &peerPinner{
@@ -357,13 +366,14 @@ func (p *peerPinner) RoundTrip(r *http.Request) (*http.Response, error) {
 // traceHeaders are the propagation headers a third party never receives.
 var traceHeaders = []string{"traceparent", "tracestate", "baggage"}
 
-// rerouter delivers a request addressed to a public API to the in-cluster
-// service standing in for it. It sits below otelhttp, so the span has already
-// recorded the public URL by the time the destination is rewritten.
+// rerouter prepares a request addressed to a public API for delivery to the
+// in-cluster service standing in for it; the Transport's DialContext does the
+// actual redirect. It sits below otelhttp, so the span has already recorded the
+// public URL, and it deliberately leaves the URL's host alone.
 type rerouter struct {
 	next   http.RoundTripper
 	scheme string
-	host   string
+	addr   string
 }
 
 func newRerouter(dialBase string, next http.RoundTripper) *rerouter {
@@ -375,17 +385,16 @@ func newRerouter(dialBase string, next http.RoundTripper) *rerouter {
 	return &rerouter{
 		next:   next,
 		scheme: scheme,
-		host:   net.JoinHostPort(host, strconv.Itoa(port)),
+		addr:   net.JoinHostPort(host, strconv.Itoa(port)),
 	}
 }
 
 func (rr *rerouter) RoundTrip(r *http.Request) (*http.Response, error) {
 	// A RoundTripper must not modify the request it was given.
 	out := r.Clone(r.Context())
-	// Keep the public host in the Host header, as a real request would carry.
-	out.Host = r.URL.Host
+	// Speak the stand-in's scheme (plain HTTP in the chart) to the public
+	// host; the host itself is untouched, see NewClient.
 	out.URL.Scheme = rr.scheme
-	out.URL.Host = rr.host
 	for _, h := range traceHeaders {
 		out.Header.Del(h)
 	}

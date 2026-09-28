@@ -35,6 +35,14 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/shopd /shopd
+# The same binary again, as a separate file, for the third-party stand-ins
+# (ROLE=partner-sim). It must be a distinct COPY, not a link: the Causely agent's
+# Beyla instruments by executable inode, and once any role's ports match its
+# filter it hooks every process running that inode. A stand-in running /shopd
+# would therefore get SERVER spans attributed to it, and Causely would blame the
+# in-cluster pod instead of the provider it stands in for. See
+# docs/causely-setup.md, "External services".
+COPY --from=build /out/shopd /partner-sim
 USER nonroot:nonroot
 
 # Admin port: health probes and the fault-injection API. Business ports vary by
