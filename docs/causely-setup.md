@@ -177,6 +177,58 @@ Worth knowing, because these look like bugs otherwise:
 - Causely names services `<namespace>/<service>`, e.g. `tracey-shop/checkout-api`. That is the
   form to pass to MCP tools like `get_service_summary`.
 
+## External services
+
+A CLIENT span to a hostname that nothing in the cluster claims (no pod, no Kubernetes Service,
+no known NetworkEndpoint) becomes a plain `Service` entity named after the hostname, labelled
+`causely.ai/service-type=External`. Its `Malfunction` and `Congested` root causes are what let
+Causely say "the third party is the problem, not your services". The evidence for them is the
+callers' own CLIENT spans:
+
+- HTTP `http.response.status_code` ≥ 500 counts as an error; 401/403 and 429 count as
+  unauthorized and throttled; other 4xx do not count
+- the error-rate symptom on the caller's access needs a ratio above 4% at more than 0.3 rps
+
+The demo's third parties are in-cluster stand-ins, so three rules keep them external. Break any
+one of them and Causely ties the public hostname back to the stand-in pod, which then looks like
+one of *your* services failing:
+
+1. **Callers name the public API, not the stand-in.** `httpx.WithDialTo` puts
+   `https://api.paypal.com/...` on the span (`url.full`, `server.address`, `server.port: 443`) and
+   delivers the request to the in-cluster Service underneath otelhttp.
+2. **No span is ever parented to that CLIENT span.** If the receiver emits a SERVER span whose
+   parent is the caller's CLIENT span, the mediator bridges the hostname to the receiving
+   Service. So the stand-ins run plain `net/http` without otelhttp, and `WithDialTo` strips
+   `traceparent`, `tracestate` and `baggage` on the way out. Real third parties never get your
+   trace context either.
+3. **Beyla stays out of the shop entirely.** The Causely agent's Beyla instruments any process
+   with a listening port in `80,443,2000-10000`, and it instruments **by executable**: one match
+   hooks every process running the same binary, and every shop service runs `/shopd`. The shop is
+   already OTel-instrumented, so Beyla just reports each call a second time. That is harmless for
+   internal calls, but it breaks the external ones in two ways, both seen on a live cluster:
+   - Beyla reads the request URL inside `net/http`, below otelhttp. When `WithDialTo` rewrote the
+     URL to the stand-in's address, Beyla reported `payment-gw → tracey-shop-stripe-sim` with
+     the 503s, and Causely diagnosed the stand-in as well as the provider. So `WithDialTo`
+     redirects at **dial time**, and the URL keeps the public host all the way down.
+   - Once Beyla reported `api.paypal.com` too, the mediator had two writers for the same
+     entities, the Beyla scraper and the OpenTelemetry scraper. Beyla's numbers won: Causely
+     showed api.paypal.com at ~1% errors while payment-gw was getting 50% 503s, found nothing
+     wrong with the provider, and diagnosed **payment-gw** instead.
+
+   The fix is that no shop process listens in Beyla's range. The chart adds `listenPortOffset`
+   (10000) to every service's container port and puts the admin port at 18090, while the
+   Kubernetes Services keep their usual ports (`9005`, `8080`, …), so addresses, spans and
+   topology are unchanged. As belt and braces, the stand-ins also run `/partner-sim`, a
+   separate copy of the binary with its own inode (see the `Dockerfile`).
+
+   Check it with the Beyla container's log in the agent pod on any node. It should never say
+   `instrumenting process cmd=/shopd` or `cmd=/partner-sim`.
+
+The stand-ins also run their fault store `Quiet`. An ERROR log from a pod in your cluster is
+evidence Causely weighs against that pod, and a real provider's logs are not yours to read. The
+callers log instead (`payment processor unavailable, authorization not attempted`,
+`provider_host=api.paypal.com`), which is what exonerates them.
+
 ## The PostgreSQL scraper (separate from traces)
 
 Traces build the service topology. Causely's native PostgreSQL integration is a **different
@@ -235,7 +287,7 @@ Causely side:
 
 | Check | Expectation |
 |---|---|
-| `get_entities(namespace_names=["tracey-shop"])` | all 15 services present as Service entities |
+| `get_entities(namespace_names=["tracey-shop"])` | every shop service present as a Service entity (the three sims have no spans, so they appear only as Kubernetes workloads), plus `api.paypal.com`, `api.easypost.com` and `api.sendgrid.com` as External services |
 | `get_topology` | five layers, gRPC and HTTP edges, Postgres and Valkey database entities, Produces/Consumes edges on all three topics |
 | `get_service_summary(service="tracey-shop/checkout-api")` | healthy, SLOs satisfied |
 | `get_symptoms` for the namespace | **empty** — a clean baseline is the whole point |

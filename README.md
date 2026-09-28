@@ -84,14 +84,14 @@ web-client ┴HTTP─▶ storefront-bff :8080                                   
    gRPC │ │Redis   Redis│         gRPC │ │ │ └──HTTP──▶ shipping-quote :8082 ← layer 3
         ▼ └──▶(valkey)  └──▶(valkey)   │ │ │                  │HTTP
    inventory-svc :9003                 │ │ │                  ▼
-        │Postgres                      │ │ │            carrier-sim :8085
+        │Postgres                      │ │ │            api.easypost.com
         ▼                              │ │ └──gRPC──▶ pricing-engine :9004
    (postgres)                          │ │                 │Postgres │Redis
                                        │ │                 ▼         ▼
                                        │ └──gRPC──▶ payment-gw :9005           ← layer 3
                                        │                │            │HTTP
                                        │           gRPC ▼            ▼
-                                       │        ledger-svc :9006  stripe-sim :8086 ← layer 4
+                                       │        ledger-svc :9006  api.paypal.com ← layer 4
                                        │           │Postgres  │Kafka: ledger.events
                                        │
                                        └──Kafka PRODUCE topic "orders"
@@ -108,18 +108,21 @@ web-client ┴HTTP─▶ storefront-bff :8080                                   
                                                     notification-worker          ← layer 5
                                                              │HTTP
                                                              ▼
-                                                       email-sim :8087
+                                                       api.sendgrid.com
 ```
 
 Deepest synchronous chain, five services and a database:
 `storefront-bff → checkout-api → payment-gw → ledger-svc → postgres`
 
 Deepest asynchronous chain:
-`checkout-api → Kafka(orders) → fraud-detector → risk-model → Kafka(notifications) → notification-worker → email-sim`
+`checkout-api → Kafka(orders) → fraud-detector → risk-model → Kafka(notifications) → notification-worker → api.sendgrid.com`
 
-`stripe-sim`, `carrier-sim` and `email-sim` stand in for third-party providers. They run the
-same `partner-sim` implementation under three different service names, so the graph has
-realistic leaf dependencies with no internet access required.
+`api.paypal.com`, `api.easypost.com` and `api.sendgrid.com` are third-party APIs. Each is
+really an in-cluster stand-in (`stripe-sim`, `carrier-sim`, `email-sim`, one `partner-sim`
+implementation under three names), but callers address the public URL and the stand-ins emit
+no telemetry, so Causely models them as **External** services. That gives the graph realistic
+third-party leaves, with no internet access required, and lets a scenario break "the provider".
+See [docs/topology.md](docs/topology.md).
 
 `ai-assistant` is the genAI branch: it answers product questions by calling an LLM and emits
 GenAI OpenTelemetry spans, which Causely turns into `AIModel` and `AIModelAccess` entities with
@@ -189,6 +192,8 @@ prerequisite for a credible demo, since Causely should find nothing until you br
 | `risk-crash` | risk-model panics on 2% | risk-model, CrashLoopBackOff |
 | `checkout-latency` | checkout-api's own latency | control case: cause and symptom are the same service |
 | `ai-model-malfunction` | LLM provider fails 50% of inferences | **AIModel Malfunction** on `mock-small-1/chat` — the failing entity is a model, not a service |
+| `payment-provider-outage` | api.paypal.com answers 503 on 50% of authorisations | **Service Malfunction** on `api.paypal.com` (External) — payment-gw, checkout-api and storefront-bff are exonerated |
+| `email-provider-errors` | api.sendgrid.com answers 503 on 60% of sends | **Service Malfunction** on `api.sendgrid.com` (External), not notification-worker |
 
 Each scenario also emits a **matching WARN/ERROR log line**, because Causely builds its root-cause
 *description* from container logs, not only from metric symptoms — without one the description is

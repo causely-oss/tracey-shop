@@ -48,6 +48,11 @@ type Narrative struct {
 	CacheBypass string
 	// DependencyTimeout is logged at ERROR when an outbound call is cut short.
 	DependencyTimeout string
+	// ProviderFailure is logged at ERROR by a caller when a third-party API it
+	// depends on answers with a server error. It is the caller's evidence that
+	// the failure is the provider's, not its own — the line that lets Causely
+	// exonerate the caller.
+	ProviderFailure string
 }
 
 // defaultNarrative is used for services that no scenario targets directly.
@@ -62,6 +67,7 @@ var defaultNarrative = Narrative{
 	ConsumerStall:     "message processing halted",
 	CacheBypass:       "cache unavailable, falling through to origin",
 	DependencyTimeout: "downstream call exceeded its deadline",
+	ProviderFailure:   "third-party provider returned a server error",
 }
 
 // narratives is keyed by service name (SERVICE_NAME, which is what
@@ -74,6 +80,7 @@ var narratives = map[string]Narrative{
 		// cart-timeouts style cascade, if ever pointed here.
 		DependencyTimeout: "ledger settlement call exceeded deadline, authorization abandoned",
 		Latency:           "payment authorization latency degraded",
+		ProviderFailure:   "payment processor unavailable, authorization not attempted",
 		Panic:             "unrecoverable error settling authorization",
 	},
 
@@ -138,15 +145,21 @@ var narratives = map[string]Narrative{
 	"storefront-bff": {
 		Error:             "request failed at the storefront edge",
 		DependencyTimeout: "downstream call exceeded deadline, returning error to client",
+		ProviderFailure:   "payment provider unavailable, Pay in 4 offer omitted from product page",
 	},
 	"shipping-quote": {
 		Error:             "carrier rate lookup failed",
 		DependencyTimeout: "carrier API call exceeded deadline",
+		ProviderFailure:   "carrier API unavailable, shipment not booked",
 	},
 	"notification-worker": {
-		Error:         "notification delivery failed",
-		ConsumerStall: "notification processing halted, offsets are no longer committing",
+		Error:           "notification delivery failed",
+		ConsumerStall:   "notification processing halted, offsets are no longer committing",
+		ProviderFailure: "email provider unavailable, message not delivered",
 	},
+	// The three third-party stand-ins run with Quiet set, so these are never
+	// actually logged: a real provider's logs are not in your cluster. They are
+	// kept so a sim's messages still read plausibly if Quiet is ever removed.
 	"stripe-sim": {
 		Error: "charge request rejected",
 	},
@@ -216,6 +229,9 @@ func narrativeFor(service string) Narrative {
 	if n.DependencyTimeout == "" {
 		n.DependencyTimeout = d.DependencyTimeout
 	}
+	if n.ProviderFailure == "" {
+		n.ProviderFailure = d.ProviderFailure
+	}
 	return n
 }
 
@@ -263,6 +279,9 @@ func (l *logLimiter) allow(key string) (bool, int) {
 // emit logs msg at the given level, rate-limited per message, with the standard
 // suppression counter appended.
 func (s *Store) emit(level slog.Level, msg string, attrs ...any) {
+	if s.quiet.Load() {
+		return
+	}
 	allowed, dropped := s.limiter.allow(msg)
 	if !allowed {
 		return

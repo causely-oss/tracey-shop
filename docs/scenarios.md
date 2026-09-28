@@ -37,7 +37,7 @@ different: use `payment-outage` (100%) instead of `payment-errors` (35%), so the
 first click. See that scenario below.
 
 For any scenario on the checkout path (`payment-errors`, `ledger-slow-queries`, `cart-timeouts`,
-`ledger-pool-exhaustion`), weight the mix toward checkout first:
+`ledger-pool-exhaustion`, `payment-provider-outage`), weight the mix toward checkout first:
 
 ```bash
 helm upgrade tracey-shop deploy/tracey-shop -n tracey-shop --reuse-values \
@@ -84,6 +84,15 @@ Every scenario therefore emits a matching log. Two rules govern them, both enfor
 | `risk-crash` | ERROR + panic | unrecoverable error scoring order: feature vector dimension mismatch | (also the panic message, so the stack trace reads plausibly) |
 | `checkout-latency` | WARN | checkout orchestration latency degraded | `duration_ms`, `threshold_ms` |
 | `ai-model-malfunction` | ERROR | inference request failed: model backend returned no completion | `observed_failure_rate`, `retryable` |
+| `payment-provider-outage` | ERROR, at **payment-gw** and **storefront-bff** | payment processor unavailable, authorization not attempted / payment provider unavailable, Pay in 4 offer omitted from product page | `provider_host`, `http_status`, `retryable` |
+| `email-provider-errors` | ERROR, at **notification-worker** | email provider unavailable, message not delivered | `provider_host`, `http_status`, `retryable` |
+
+The two provider scenarios are the exception to "the faulted service logs". The fault is set on an
+in-cluster stand-in, which logs **nothing**: a real provider's logs are not in your cluster, and
+an ERROR line from a pod of yours is evidence against that pod. The evidence is logged by the
+*caller* instead, naming the provider host. That is what lets Causely exonerate the caller. It is
+ordinary application behaviour rather than fault narrative, so it would fire just the same if the
+real PayPal went down.
 
 `cart-timeouts` is the one worth understanding. It emits on **both** sides: a latency warning at
 `cart-service` (the real cause) and a deadline error at `checkout-api` (the visible victim) naming
@@ -207,7 +216,8 @@ payment-gw  errorRate=0.35
 
 35% of authorisations return gRPC `INTERNAL`. Errors propagate up through `checkout-api` to
 `storefront-bff`, so **three services show an elevated error rate** but only one is the cause.
-`payment-gw`'s own dependencies (`stripe-sim`, `ledger-svc`) stay healthy.
+`payment-gw`'s own dependencies (`api.paypal.com`, `ledger-svc`) stay healthy. Compare
+`payment-provider-outage`, which breaks the processor instead and should exonerate payment-gw.
 
 - **Expected root cause:** `payment-gw`
 - **Expected symptoms:** `RequestErrorRate_High` on payment-gw, checkout-api, storefront-bff
@@ -490,6 +500,78 @@ window. `./scripts/genai.sh 2` shortens it.
 what you would be waiting for, and `errorRate` on `model-gateway` does nothing because the bundled
 gateway is not deployed. Use `{"dependencyTimeoutMs":500}` on **`ai-assistant`** instead — the
 caller-side seam described in [genai.md](genai.md#breaking-it).
+
+### `payment-provider-outage` — the third party is down, and it is not your fault
+
+```
+stripe-sim  errorRate=0.5      (the stand-in for api.paypal.com)
+```
+
+Half of all calls to `api.paypal.com` get a **503**. PayPal has **two independent callers**:
+- `payment-gw` authorises payments with it. It answers `UNAVAILABLE`, so checkout fails, and
+  **three of your services error**: payment-gw, checkout-api and storefront-bff.
+- `storefront-bff` asks it for the "Pay in 4" financing offer on every product page. That
+  degrades gracefully: the page still loads, just without the PayPal line.
+
+The story on screen is the incident everyone has lived through, where the pager says payment-gw
+is broken but nothing in payment-gw changed.
+
+**Why the second caller matters.** With one caller, "payment-gw is broken" and "PayPal is
+broken" explain the evidence about equally well. Causely only lets a failing dependency explain
+its caller's errors through a *learned* probability, the cross-correlation of their error
+rates, and one noisy window tips it towards blaming payment-gw. We saw exactly that with a
+single caller. Two unrelated services failing against the same provider at the same moment
+have exactly one common explanation.
+
+- **Expected root cause:** `Service Malfunction` on **`api.paypal.com`**, an **External**
+  service (`causely.ai/service-type=External`). There may also be `Faulty Error Handling in HTTP
+  Path` on its `/v2/payments/authorizations` path.
+- **Expected symptoms:** `RequestErrorRate_High` on payment-gw's access to api.paypal.com, and on
+  payment-gw, checkout-api and storefront-bff, as **impacted** services rather than causes
+- **Evidence Causely sees:** only what a real PayPal outage would give you. The 503s on
+  payment-gw's CLIENT spans, and payment-gw's log `payment processor unavailable, authorization not
+  attempted provider_host=api.paypal.com http_status=503`. Nothing comes from the provider side.
+- **The test:** can Causely exonerate every service you own and point outside the cluster?
+
+**Needs the checkout-weighted load mix** (above), like every checkout-path scenario. At the
+default 5% checkout the provider still gets ~2 authorisations/s, comfortably over Causely's
+0.3 rps gate on the access, but storefront-bff's overall error rate is diluted to ~2.5% (50% × 5%).
+
+**For a browser demo,** use `{"errorRate":1.0}` on `stripe-sim` by hand, for the same reason as
+`payment-outage`.
+
+**Don't judge it straight after a rollout.** Causely's service-level metrics can read 0 for
+10–90 minutes after a deploy, which starves the error-rate correlation above. Restarting the
+mediator (`kubectl -n <mediator namespace> rollout restart deployment/mediator`) brings them back.
+Check `get_metrics` on `api.paypal.com` shows a non-zero `request_rate` before starting.
+
+**How the provider stays "external".** The fault is on an in-cluster pod, and the demo only
+works because Causely cannot tell. See [causely-setup.md](causely-setup.md#external-services)
+for the three rules that keep it that way. Before the demo, confirm Causely has `api.paypal.com`
+as an External service with a trace edge from payment-gw, and that `tracey-shop/tracey-shop-stripe-sim`
+has **no** trace edges. If the stand-in has edges, Causely will blame it as one of your services
+and the scenario loses its point.
+
+### `email-provider-errors` — a failing provider on the async branch
+
+```
+email-sim  errorRate=0.6       (the stand-in for api.sendgrid.com)
+```
+
+60% of sends get a 503 from `api.sendgrid.com`. The shopper sees **nothing**, because the
+order already succeeded. `notification-worker` is the only service of yours that notices: its
+CONSUMER spans fail and it logs `email provider unavailable, message not delivered`.
+
+- **Expected root cause:** `Service Malfunction` on **`api.sendgrid.com`** (External), with
+  notification-worker impacted
+- **The test:** exoneration with no synchronous caller. The only one of your services that is
+  "erroring" is a background worker, and the right answer is still the third party.
+
+The failed message is committed and dropped, not retried, so there is **no consumer lag**. Keep
+that in mind if someone asks why the backlog didn't grow.
+
+Order events run at ~2/s at the default load, well over the 0.3 rps gate, so this needs no
+change to the load mix.
 
 ## Fault reference
 

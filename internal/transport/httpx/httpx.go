@@ -1,6 +1,6 @@
 // Package httpx provides the demo's instrumented HTTP server and client.
 //
-// otelhttp v0.62 emits the stable HTTP semantic conventions by default, so
+// otelhttp v0.70 emits the stable HTTP semantic conventions by default, so
 // client spans already carry server.address, server.port, url.full and
 // http.response.status_code — exactly the attributes Causely reads to resolve
 // an HTTP dependency edge. The wrapper below re-asserts server.address and
@@ -159,6 +159,7 @@ type ClientOption func(*clientOptions)
 type clientOptions struct {
 	headers map[string]string
 	ownSpan bool
+	dialTo  string
 }
 
 // WithHeader sets a static header on every request this client makes.
@@ -190,6 +191,25 @@ func WithCallerSpan() ClientOption {
 	return func(o *clientOptions) { o.ownSpan = true }
 }
 
+// WithDialTo makes the client present itself as calling baseURL — a public
+// third-party API such as https://api.paypal.com — while actually delivering
+// every request to dialBase, the in-cluster service standing in for it.
+//
+// Everything above the transport sees only the public URL: the CLIENT span's
+// url.full, server.address and server.port, the Host header, and the URL in a
+// StatusError. So Causely resolves the destination as an External service
+// named after the public hostname, exactly as it would for the real provider.
+//
+// The W3C trace headers are stripped on the way out. That is what a real
+// integration with a third party looks like — their servers never report spans
+// back to you — and it is load-bearing here: if the stand-in ever produced a
+// SERVER span parented to our CLIENT span, the mediator would bridge the public
+// hostname to the in-cluster Service, and it would stop looking external. See
+// docs/causely-setup.md, "External services".
+func WithDialTo(dialBase string) ClientOption {
+	return func(o *clientOptions) { o.dialTo = dialBase }
+}
+
 // NewClient builds a client for baseURL. The peer attributes are derived once
 // from the URL and pinned onto every CLIENT span.
 func NewClient(baseURL string, timeout time.Duration, store *faults.Store, opts ...ClientOption) *Client {
@@ -212,8 +232,22 @@ func NewClient(baseURL string, timeout time.Duration, store *faults.Store, opts 
 	//
 	// With WithCallerSpan the pinner is still in the chain and still asserts
 	// onto whatever recording span the caller put in the context.
+	var next http.RoundTripper = base
+	if o.dialTo != "" {
+		rr := newRerouter(o.dialTo, base)
+		// Redirect the socket, not the request. The URL keeps the public host
+		// all the way down, so an eBPF instrumenter hooking net/http (the
+		// Causely agent's Beyla does) also records api.paypal.com rather than
+		// the stand-in's in-cluster name.
+		dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+		base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, rr.addr)
+		}
+		next = rr
+	}
+
 	var rt http.RoundTripper = &peerPinner{
-		next: base,
+		next: next,
 		attrs: []attribute.KeyValue{
 			semconv.ServerAddress(host),
 			semconv.ServerPort(port),
@@ -329,6 +363,44 @@ func (p *peerPinner) RoundTrip(r *http.Request) (*http.Response, error) {
 	return p.next.RoundTrip(r)
 }
 
+// traceHeaders are the propagation headers a third party never receives.
+var traceHeaders = []string{"traceparent", "tracestate", "baggage"}
+
+// rerouter prepares a request addressed to a public API for delivery to the
+// in-cluster service standing in for it; the Transport's DialContext does the
+// actual redirect. It sits below otelhttp, so the span has already recorded the
+// public URL, and it deliberately leaves the URL's host alone.
+type rerouter struct {
+	next   http.RoundTripper
+	scheme string
+	addr   string
+}
+
+func newRerouter(dialBase string, next http.RoundTripper) *rerouter {
+	host, port := hostPortFromURL(dialBase)
+	scheme := "http"
+	if _, ok := stripPrefix(dialBase, "https://"); ok {
+		scheme = "https"
+	}
+	return &rerouter{
+		next:   next,
+		scheme: scheme,
+		addr:   net.JoinHostPort(host, strconv.Itoa(port)),
+	}
+}
+
+func (rr *rerouter) RoundTrip(r *http.Request) (*http.Response, error) {
+	// A RoundTripper must not modify the request it was given.
+	out := r.Clone(r.Context())
+	// Speak the stand-in's scheme (plain HTTP in the chart) to the public
+	// host; the host itself is untouched, see NewClient.
+	out.URL.Scheme = rr.scheme
+	for _, h := range traceHeaders {
+		out.Header.Del(h)
+	}
+	return rr.next.RoundTrip(out)
+}
+
 // ---------------------------------------------------------------------------
 // Errors and helpers
 // ---------------------------------------------------------------------------
@@ -342,6 +414,17 @@ type StatusError struct {
 
 func (e *StatusError) Error() string {
 	return fmt.Sprintf("%s returned %d: %s", e.URL, e.Status, e.Body)
+}
+
+// ServerErrorStatus reports whether err is a 5xx answer from the downstream,
+// and which status it was. Callers of a third-party API use it to tell the
+// provider's failure apart from their own.
+func ServerErrorStatus(err error) (int, bool) {
+	var se *StatusError
+	if errors.As(err, &se) && se.Status >= 500 {
+		return se.Status, true
+	}
+	return 0, false
 }
 
 // DecodeJSON reads a JSON request body, returning a 400-mapped error on

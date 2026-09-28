@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	shopv1 "github.com/causely-oss/tracey-shop/gen/shop/v1"
 	"github.com/causely-oss/tracey-shop/internal/app"
@@ -31,6 +32,9 @@ func Run(ctx context.Context, d *app.Deps) error {
 		return fmt.Errorf("checkout client: %w", err)
 	}
 	cart := d.HTTPClient(d.Cfg.CartURL)
+	// The same payment provider payment-gw charges through. Product pages ask it
+	// for the "Pay in 4" financing offer, as a real PayPal storefront does.
+	paypal := d.PartnerClient(d.Cfg.StripePublicURL, d.Cfg.StripeURL)
 
 	s := httpx.NewServer(d.Cfg.ServiceName, d.Cfg.HTTPAddr, d.Faults)
 
@@ -67,9 +71,11 @@ func Run(ctx context.Context, d *app.Deps) error {
 		if resp.GetProduct() == nil {
 			return nil, &httpx.NotFoundError{Msg: "product " + id + " not found"}
 		}
+		product := domain.ProductFromProto(resp.GetProduct())
 		return map[string]any{
-			"product":  domain.ProductFromProto(resp.GetProduct()),
+			"product":  product,
 			"cacheHit": resp.GetCacheHit(),
+			"payLater": payLaterOffer(ctx, d, paypal, product),
 		}, nil
 	})
 
@@ -258,4 +264,39 @@ func intParam(r *http.Request, name string, def int32) int32 {
 		v = 200
 	}
 	return int32(v)
+}
+
+// payLaterBudget bounds the financing lookup. It is decoration on a product
+// page, so a slow provider must never hold the page up.
+const payLaterBudget = time.Second
+
+// payLaterOffer asks the payment provider for its "Pay in 4" financing offer on
+// a product. It degrades gracefully: if the provider fails, the page renders
+// without the offer rather than failing, and the provider's failure is logged.
+//
+// It is also what gives api.paypal.com a second, independent caller. When the
+// provider breaks, payment-gw's authorisations and this lookup fail together;
+// neither of our services alone can explain the other's failures, so Causely's
+// only single explanation is the provider itself.
+func payLaterOffer(ctx context.Context, d *app.Deps, paypal *httpx.Client, p domain.Product) *domain.PayLaterOffer {
+	ctx, cancel := context.WithTimeout(ctx, payLaterBudget)
+	defer cancel()
+
+	var ack domain.PartnerResponse
+	err := paypal.PostJSON(ctx, "/v1/credit/calculated-financing-options", domain.PartnerRequest{
+		Reference: p.ID,
+		AmountC:   p.Price.Cents,
+		Currency:  p.Price.Currency,
+	}, &ack)
+	if err != nil {
+		if code, ok := httpx.ServerErrorStatus(err); ok {
+			d.Faults.LogProviderFailure(paypal.Host(), code)
+		}
+		return nil
+	}
+	return &domain.PayLaterOffer{
+		Provider:     ack.Provider,
+		Installments: 4,
+		Installment:  domain.Money{Cents: (p.Price.Cents + 3) / 4, Currency: p.Price.Currency},
+	}
 }
