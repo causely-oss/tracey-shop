@@ -578,9 +578,10 @@ services:
   # etc. as External services, and a sim fault reads as the provider failing.
   # Set publicURL to "" to call the sim under its own in-cluster name instead.
   #
-  # Both ports sit above 10000 on purpose. The Causely agent's Beyla instruments
-  # any process with an open port in 80,443,2000-10000, and its spans would tie
-  # the public hostname back to this in-cluster pod. See docs/causely-setup.md,
+  # Both ports sit above 10000 on purpose, and the sims run a separate copy of
+  # the binary (/partner-sim). The Causely agent's Beyla instruments processes
+  # with a port in 80,443,2000-10000 by executable, and its spans would tie the
+  # public hostname back to this in-cluster pod. See docs/causely-setup.md,
   # "External services".
   stripe-sim:
     enabled: true

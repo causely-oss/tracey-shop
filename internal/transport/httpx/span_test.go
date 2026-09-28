@@ -275,3 +275,43 @@ func TestDialToPresentsThePublicProvider(t *testing.T) {
 		t.Errorf("http.response.status_code = %d, want 503 — this is what Causely counts as the provider's error", got.AsInt64())
 	}
 }
+
+type recordingTransport struct{ got *http.Request }
+
+func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.got = r
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Request: r}, nil
+}
+
+// TestRerouterKeepsThePublicHost guards the part of WithDialTo that is invisible
+// to the span. The Causely agent's Beyla hooks net/http's transport and reads
+// the request URL there, below otelhttp. The first version rewrote the URL to
+// the stand-in's in-cluster address at this layer, so Beyla reported
+// payment-gw -> tracey-shop-stripe-sim, and Causely diagnosed the stand-in as
+// well as api.paypal.com. The redirect has to happen at dial time instead.
+func TestRerouterKeepsThePublicHost(t *testing.T) {
+	spy := &recordingTransport{}
+	rr := newRerouter("http://tracey-shop-stripe-sim:18086", spy)
+
+	req := httptest.NewRequest(http.MethodPost, "https://api.paypal.com/v2/payments/authorizations", nil)
+	req.Header.Set("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
+	if _, err := rr.RoundTrip(req); err != nil {
+		t.Fatal(err)
+	}
+
+	if spy.got.URL.Host != "api.paypal.com" {
+		t.Errorf("transport saw host %q; it must stay api.paypal.com", spy.got.URL.Host)
+	}
+	if spy.got.URL.Scheme != "http" {
+		t.Errorf("transport saw scheme %q, want the stand-in's http", spy.got.URL.Scheme)
+	}
+	if rr.addr != "tracey-shop-stripe-sim:18086" {
+		t.Errorf("dial address = %q", rr.addr)
+	}
+	if spy.got.Header.Get("traceparent") != "" {
+		t.Error("traceparent reached the transport")
+	}
+	if req.Header.Get("traceparent") == "" {
+		t.Error("the caller's request was modified; a RoundTripper must clone")
+	}
+}

@@ -76,6 +76,11 @@ spec:
         - name: shopd
           image: "{{ $root.Values.image.repository }}:{{ $root.Values.image.tag | default $root.Chart.AppVersion }}"
           imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          {{- if eq $role "partner-sim" }}
+          # A separate copy of the binary, so Beyla never instruments the
+          # stand-ins (see the Dockerfile).
+          command: ["/partner-sim"]
+          {{- end }}
           env:
             - name: ROLE
               value: {{ $role | quote }}

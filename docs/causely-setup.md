@@ -201,10 +201,18 @@ one of *your* services failing:
    Service. So the stand-ins run plain `net/http` without otelhttp, and `WithDialTo` strips
    `traceparent`, `tracestate` and `baggage` on the way out. Real third parties never get your
    trace context either.
-3. **The stand-ins sit outside the Causely agent's Beyla port range.** Beyla instruments any
-   process with an open port in `80,443,2000-10000`, **any** port, including the admin port, and
-   produces exactly the SERVER spans rule 2 forbids. That is why the sims' HTTP and admin ports
-   are 18085–18090 rather than the 80xx every other service uses.
+3. **Beyla never sees the stand-in, from either side.** The Causely agent's Beyla instruments any
+   process with an open port in `80,443,2000-10000`, but it instruments **by executable**: once
+   one process matches, every process running that same binary inode is hooked too. Every shop
+   service runs `/shopd`, so Beyla is inside all of them, the callers included. Two consequences:
+   - **Caller side.** Beyla reads the request URL inside `net/http`, below otelhttp. So
+     `WithDialTo` must not rewrite the URL: it redirects at **dial time**, and the request keeps
+     `api.paypal.com` all the way down. The first version rewrote the URL. Beyla then reported
+     `payment-gw → tracey-shop-stripe-sim` with the 503s, and Causely diagnosed the stand-in as
+     well as the provider.
+   - **Server side.** The stand-ins run `/partner-sim`, a separate COPY of the binary with its own
+     inode (see the `Dockerfile`), and only listen on ports 18085–18090. Beyla therefore never
+     selects them, and records no SERVER spans or errors against the stand-in pod.
 
 The stand-ins also run their fault store `Quiet`. An ERROR log from a pod in your cluster is
 evidence Causely weighs against that pod, and a real provider's logs are not yours to read. The
