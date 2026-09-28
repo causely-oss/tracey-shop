@@ -114,12 +114,19 @@ baseline never produces a 404.
 
 | Port | Purpose |
 |---|---|
-| 8080–8089 | HTTP business ports |
-| 9001–9007 | gRPC business ports |
-| **8090** | admin: `/healthz`, `/readyz`, `/admin/faults` — **never trace-instrumented** |
+| 8080–8089 | HTTP business ports (Service port; the container listens on +10000, e.g. 18080) |
+| 9001–9007 | gRPC business ports (Service port; the container listens on +10000, e.g. 19005) |
+| 18085–18087 | the third-party stand-ins |
+| **18090** | admin: `/healthz`, `/readyz`, `/admin/faults` — **never trace-instrumented** |
 | 4317 / 4318 | collector OTLP receiver |
 
-Two deliberate choices:
+Three deliberate choices:
+
+- No process listens in **2000–10000**. The Causely agent's Beyla instruments processes by
+  listening port in that range, and would report every call a second time alongside the SDK.
+  For the third-party APIs that second copy overwrites ours and hides the provider's errors from
+  Causely (see [causely-setup.md](causely-setup.md#external-services)). The Services keep the
+  familiar ports; only the containers listen +10000.
 
 - Business ports avoid **4317**. Causely drops any dependency whose destination port is 4317, so
   the app→collector traffic never becomes a spurious topology edge — but a business service

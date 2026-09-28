@@ -15,7 +15,7 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-tracey-shop}"
 RELEASE="${RELEASE:-tracey-shop}"
-ADMIN_PORT="${ADMIN_PORT:-8090}"
+ADMIN_PORT="${ADMIN_PORT:-18090}"
 LOCAL_PORT="${LOCAL_PORT:-18091}"
 
 log() { printf '\033[36m==>\033[0m %s\n' "$*"; }

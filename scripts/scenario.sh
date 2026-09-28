@@ -20,7 +20,7 @@ NAMESPACE="${NAMESPACE:-tracey-shop}"
 RELEASE="${RELEASE:-tracey-shop}"
 # Fallback only: each pod's admin port is read from its "admin" containerPort,
 # because the third-party stand-ins use a different one (see values.yaml).
-ADMIN_PORT="${ADMIN_PORT:-8090}"
+ADMIN_PORT="${ADMIN_PORT:-18090}"
 LOCAL_PORT="${LOCAL_PORT:-18090}"
 
 # Every service that carries a fault store.
