@@ -219,6 +219,7 @@ func TestInjectedErrorTextNeverRevealsTheInjection(t *testing.T) {
 func TestProviderFailureNamesTheOperation(t *testing.T) {
 	cases := map[string]string{
 		"payment-gw":          "payment processor",
+		"storefront-bff":      "payment provider",
 		"shipping-quote":      "carrier",
 		"notification-worker": "email provider",
 	}

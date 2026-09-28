@@ -6,7 +6,7 @@
 |---|---|---|---|
 | `browser` (a real user) | 0 | — | HTTP → storefront-bff |
 | `web-client` | 0 | — | HTTP → storefront-bff |
-| `storefront-bff` | 1 | HTTP :8080 | gRPC → catalog-api, checkout-api; HTTP → cart-service, ai-assistant (only when `genai.enabled`). Also serves the embedded browser storefront at `/` — untraced |
+| `storefront-bff` | 1 | HTTP :8080 | gRPC → catalog-api, checkout-api; HTTP → cart-service, ai-assistant (only when `genai.enabled`), api.paypal.com (the "Pay in 4" offer on product pages; degrades gracefully). Also serves the embedded browser storefront at `/` — untraced |
 | `catalog-api` | 2 | gRPC :9001 | gRPC → inventory-svc; Valkey |
 | `cart-service` | 2 | HTTP :8081 | Valkey |
 | `checkout-api` | 2 | gRPC :9002 | HTTP → cart-service, shipping-quote; gRPC → pricing-engine, inventory-svc, payment-gw; Postgres; Kafka → `orders` |

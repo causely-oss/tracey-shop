@@ -84,7 +84,7 @@ Every scenario therefore emits a matching log. Two rules govern them, both enfor
 | `risk-crash` | ERROR + panic | unrecoverable error scoring order: feature vector dimension mismatch | (also the panic message, so the stack trace reads plausibly) |
 | `checkout-latency` | WARN | checkout orchestration latency degraded | `duration_ms`, `threshold_ms` |
 | `ai-model-malfunction` | ERROR | inference request failed: model backend returned no completion | `observed_failure_rate`, `retryable` |
-| `payment-provider-outage` | ERROR, at **payment-gw** | payment processor unavailable, authorization not attempted | `provider_host`, `http_status`, `retryable` |
+| `payment-provider-outage` | ERROR, at **payment-gw** and **storefront-bff** | payment processor unavailable, authorization not attempted / payment provider unavailable, Pay in 4 offer omitted from product page | `provider_host`, `http_status`, `retryable` |
 | `email-provider-errors` | ERROR, at **notification-worker** | email provider unavailable, message not delivered | `provider_host`, `http_status`, `retryable` |
 
 The two provider scenarios are the exception to "the faulted service logs". The fault is set on an
@@ -507,10 +507,21 @@ caller-side seam described in [genai.md](genai.md#breaking-it).
 stripe-sim  errorRate=0.5      (the stand-in for api.paypal.com)
 ```
 
-Half of all authorisations get a **503** from `api.paypal.com`. `payment-gw` answers
-`UNAVAILABLE`, so checkout fails, and **three of your services error**: payment-gw,
-checkout-api and storefront-bff. The story on screen is the incident everyone has lived
-through, where the pager says payment-gw is broken but nothing in payment-gw changed.
+Half of all calls to `api.paypal.com` get a **503**. PayPal has **two independent callers**:
+- `payment-gw` authorises payments with it. It answers `UNAVAILABLE`, so checkout fails, and
+  **three of your services error**: payment-gw, checkout-api and storefront-bff.
+- `storefront-bff` asks it for the "Pay in 4" financing offer on every product page. That
+  degrades gracefully: the page still loads, just without the PayPal line.
+
+The story on screen is the incident everyone has lived through, where the pager says payment-gw
+is broken but nothing in payment-gw changed.
+
+**Why the second caller matters.** With one caller, "payment-gw is broken" and "PayPal is
+broken" explain the evidence about equally well. Causely only lets a failing dependency explain
+its caller's errors through a *learned* probability, the cross-correlation of their error
+rates, and one noisy window tips it towards blaming payment-gw. We saw exactly that with a
+single caller. Two unrelated services failing against the same provider at the same moment
+have exactly one common explanation.
 
 - **Expected root cause:** `Service Malfunction` on **`api.paypal.com`**, an **External**
   service (`causely.ai/service-type=External`). There may also be `Faulty Error Handling in HTTP
@@ -528,6 +539,11 @@ default 5% checkout the provider still gets ~2 authorisations/s, comfortably ove
 
 **For a browser demo,** use `{"errorRate":1.0}` on `stripe-sim` by hand, for the same reason as
 `payment-outage`.
+
+**Don't judge it straight after a rollout.** Causely's service-level metrics can read 0 for
+10–90 minutes after a deploy, which starves the error-rate correlation above. Restarting the
+mediator (`kubectl -n <mediator namespace> rollout restart deployment/mediator`) brings them back.
+Check `get_metrics` on `api.paypal.com` shows a non-zero `request_rate` before starting.
 
 **How the provider stays "external".** The fault is on an in-cluster pod, and the demo only
 works because Causely cannot tell. See [causely-setup.md](causely-setup.md#external-services)
