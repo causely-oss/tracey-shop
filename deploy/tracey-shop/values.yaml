@@ -469,7 +469,22 @@ defaultResources:
   limits: { cpu: 500m, memory: 256Mi }
 
 # Admin port. Health probes and the fault-injection API only — never traced.
-adminPort: 8090
+adminPort: 18090
+
+# Added to every service's port (when it is 10000 or below) to get the port the
+# process actually listens on. The Kubernetes Service keeps the configured port,
+# so callers, spans and topology are unaffected.
+#
+# Why: the Causely agent ships Beyla, which instruments any process with a
+# listening port in 80,443,2000-10000 — and it instruments by executable, so
+# one match hooks every shop service, since they all run /shopd. The shop is
+# already OTel-instrumented, so Beyla would report every call a second time.
+# For the third-party APIs that is actively harmful: Beyla's copy and ours both
+# write the api.paypal.com entities, Beyla's numbers win, and Causely sees a
+# healthy provider while payment-gw fails — so it blames payment-gw. Keep every
+# listening port, including adminPort, above 10000. See docs/causely-setup.md,
+# "External services".
+listenPortOffset: 10000
 
 services:
   # --- layer 1: edge ------------------------------------------------------
@@ -588,7 +603,6 @@ services:
     replicas: 1
     protocol: http
     port: 18086
-    adminPort: 18090
     role: partner-sim
     partnerName: paypal
     publicURL: https://api.paypal.com
@@ -600,7 +614,6 @@ services:
     replicas: 1
     protocol: http
     port: 18085
-    adminPort: 18090
     role: partner-sim
     partnerName: easypost
     publicURL: https://api.easypost.com
@@ -611,7 +624,6 @@ services:
     replicas: 1
     protocol: http
     port: 18087
-    adminPort: 18090
     role: partner-sim
     partnerName: sendgrid
     publicURL: https://api.sendgrid.com

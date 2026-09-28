@@ -165,7 +165,7 @@ func Load() (*Config, error) {
 
 		HTTPAddr:  env("HTTP_ADDR", ""),
 		GRPCAddr:  env("GRPC_ADDR", ""),
-		AdminAddr: env("ADMIN_ADDR", ":8090"),
+		AdminAddr: env("ADMIN_ADDR", ":18090"),
 
 		OTLPEndpoint: env("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		SampleRatio:  envFloat("OTEL_TRACES_SAMPLER_RATIO", 1.0),

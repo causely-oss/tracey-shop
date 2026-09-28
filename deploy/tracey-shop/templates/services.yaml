@@ -23,6 +23,15 @@ provider — the same "enabled and not external" shape the bundled backends use.
 {{- if $enabled }}
 {{- $resources := default $root.Values.defaultResources $svc.resources }}
 {{- $adminPort := $svc.adminPort | default $root.Values.adminPort }}
+{{- /*
+The port the process listens on. The Service keeps $svc.port, so every address,
+span and topology edge is unchanged; only the container's own port moves out of
+the range the Causely agent's Beyla instruments (see values.yaml, listenPortOffset).
+*/ -}}
+{{- $listenPort := int $svc.port }}
+{{- if and $svc.port (le $listenPort 10000) }}
+{{- $listenPort = add $listenPort (int $root.Values.listenPortOffset) }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -91,10 +100,10 @@ spec:
               value: {{ $name | quote }}
             {{- if eq (default "http" $svc.protocol) "http" }}
             - name: HTTP_ADDR
-              value: {{ printf ":%d" (int $svc.port) | quote }}
+              value: {{ printf ":%d" $listenPort | quote }}
             {{- else if eq $svc.protocol "grpc" }}
             - name: GRPC_ADDR
-              value: {{ printf ":%d" (int $svc.port) | quote }}
+              value: {{ printf ":%d" $listenPort | quote }}
             {{- end }}
             {{- with $svc.partnerName }}
             - name: PARTNER_NAME
@@ -127,7 +136,7 @@ spec:
               containerPort: {{ int $adminPort }}
             {{- if ne (default "http" $svc.protocol) "none" }}
             - name: {{ if eq $svc.protocol "grpc" }}grpc{{ else }}http{{ end }}
-              containerPort: {{ int $svc.port }}
+              containerPort: {{ $listenPort }}
             {{- end }}
           # Probes hit the admin port, which is never trace-instrumented, so
           # kubelet traffic cannot appear as a dependency edge in the topology.
@@ -167,7 +176,7 @@ spec:
   ports:
     - name: {{ if eq $svc.protocol "grpc" }}grpc{{ else }}http{{ end }}
       port: {{ int $svc.port }}
-      targetPort: {{ int $svc.port }}
+      targetPort: {{ $listenPort }}
       protocol: TCP
 {{- end }}
 {{- end }}

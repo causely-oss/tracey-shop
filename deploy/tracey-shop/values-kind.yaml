@@ -84,7 +84,6 @@ services:
     replicas: 1
     protocol: http
     port: 18086
-    adminPort: 18090
     role: partner-sim
     partnerName: paypal
     publicURL: https://api.paypal.com
@@ -94,7 +93,6 @@ services:
     replicas: 1
     protocol: http
     port: 18085
-    adminPort: 18090
     role: partner-sim
     partnerName: easypost
     publicURL: https://api.easypost.com
@@ -104,7 +102,6 @@ services:
     replicas: 1
     protocol: http
     port: 18087
-    adminPort: 18090
     role: partner-sim
     partnerName: sendgrid
     publicURL: https://api.sendgrid.com

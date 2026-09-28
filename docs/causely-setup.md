@@ -201,18 +201,28 @@ one of *your* services failing:
    Service. So the stand-ins run plain `net/http` without otelhttp, and `WithDialTo` strips
    `traceparent`, `tracestate` and `baggage` on the way out. Real third parties never get your
    trace context either.
-3. **Beyla never sees the stand-in, from either side.** The Causely agent's Beyla instruments any
-   process with an open port in `80,443,2000-10000`, but it instruments **by executable**: once
-   one process matches, every process running that same binary inode is hooked too. Every shop
-   service runs `/shopd`, so Beyla is inside all of them, the callers included. Two consequences:
-   - **Caller side.** Beyla reads the request URL inside `net/http`, below otelhttp. So
-     `WithDialTo` must not rewrite the URL: it redirects at **dial time**, and the request keeps
-     `api.paypal.com` all the way down. The first version rewrote the URL. Beyla then reported
-     `payment-gw → tracey-shop-stripe-sim` with the 503s, and Causely diagnosed the stand-in as
-     well as the provider.
-   - **Server side.** The stand-ins run `/partner-sim`, a separate COPY of the binary with its own
-     inode (see the `Dockerfile`), and only listen on ports 18085–18090. Beyla therefore never
-     selects them, and records no SERVER spans or errors against the stand-in pod.
+3. **Beyla stays out of the shop entirely.** The Causely agent's Beyla instruments any process
+   with a listening port in `80,443,2000-10000`, and it instruments **by executable**: one match
+   hooks every process running the same binary, and every shop service runs `/shopd`. The shop is
+   already OTel-instrumented, so Beyla just reports each call a second time. That is harmless for
+   internal calls, but it breaks the external ones in two ways, both seen on a live cluster:
+   - Beyla reads the request URL inside `net/http`, below otelhttp. When `WithDialTo` rewrote the
+     URL to the stand-in's address, Beyla reported `payment-gw → tracey-shop-stripe-sim` with
+     the 503s, and Causely diagnosed the stand-in as well as the provider. So `WithDialTo`
+     redirects at **dial time**, and the URL keeps the public host all the way down.
+   - Once Beyla reported `api.paypal.com` too, the mediator had two writers for the same
+     entities, the Beyla scraper and the OpenTelemetry scraper. Beyla's numbers won: Causely
+     showed api.paypal.com at ~1% errors while payment-gw was getting 50% 503s, found nothing
+     wrong with the provider, and diagnosed **payment-gw** instead.
+
+   The fix is that no shop process listens in Beyla's range. The chart adds `listenPortOffset`
+   (10000) to every service's container port and puts the admin port at 18090, while the
+   Kubernetes Services keep their usual ports (`9005`, `8080`, …), so addresses, spans and
+   topology are unchanged. As belt and braces, the stand-ins also run `/partner-sim`, a
+   separate copy of the binary with its own inode (see the `Dockerfile`).
+
+   Check it with the Beyla container's log in the agent pod on any node. It should never say
+   `instrumenting process cmd=/shopd` or `cmd=/partner-sim`.
 
 The stand-ins also run their fault store `Quiet`. An ERROR log from a pod in your cluster is
 evidence Causely weighs against that pod, and a real provider's logs are not yours to read. The

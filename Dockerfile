@@ -47,6 +47,6 @@ USER nonroot:nonroot
 
 # Admin port: health probes and the fault-injection API. Business ports vary by
 # role and are set through HTTP_ADDR / GRPC_ADDR.
-EXPOSE 8090
+EXPOSE 18090
 
 ENTRYPOINT ["/shopd"]
